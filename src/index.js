@@ -13,6 +13,10 @@ import { multicaRequest } from './lib/multica-api.js';
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
 const BACKOFF_STEPS_S = [15, 60, 300];
+const RECONCILABLE_TASK_STATUSES = new Set(['running', 'dispatched', 'waiting_local_directory']);
+const REQUIRED_SCHEDULER_FIELDS = [
+  'id', 'type', 'status', 'last_error', 'reply_channel', 'reply_endpoint', 'next_run_at',
+];
 
 const log = (level, message, extra) => {
   const suffix = extra ? ` ${JSON.stringify(extra)}` : '';
@@ -26,6 +30,44 @@ function runNodeScript(script, args, timeout = 20_000) {
     });
     child.on('error', (error) => resolve({ ok: false, stdout: '', stderr: '', error }));
   });
+}
+
+function validateSchedulerRows(rows) {
+  if (!Array.isArray(rows)) {
+    throw new Error('Scheduler list contract mismatch: expected a JSON array');
+  }
+  for (const row of rows) {
+    if (!row || typeof row !== 'object'
+      || REQUIRED_SCHEDULER_FIELDS.some((field) => !Object.hasOwn(row, field))) {
+      throw new Error(
+        `Scheduler list contract mismatch: expected fields ${REQUIRED_SCHEDULER_FIELDS.join(', ')}`,
+      );
+    }
+    const nullableStringFieldsValid = ['last_error', 'reply_channel', 'reply_endpoint']
+      .every((field) => row[field] === null || typeof row[field] === 'string');
+    if (typeof row.id !== 'string' || typeof row.type !== 'string'
+      || typeof row.status !== 'string' || !nullableStringFieldsValid
+      || !Number.isFinite(row.next_run_at)) {
+      throw new Error('Scheduler list contract mismatch: invalid task row field types');
+    }
+  }
+  return rows;
+}
+
+export function selectLatestMulticaSchedulerRows(rows) {
+  const latestByTask = new Map();
+  for (const row of validateSchedulerRows(rows)) {
+    if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
+    if (typeof row.reply_endpoint !== 'string' || row.reply_endpoint.length === 0) {
+      throw new Error('Scheduler list contract mismatch: Multica row has no reply_endpoint');
+    }
+    const current = latestByTask.get(row.reply_endpoint);
+    const isNewer = !current || row.next_run_at > current.next_run_at;
+    const saferTie = current && row.next_run_at === current.next_run_at
+      && current.status === 'failed' && row.status !== 'failed';
+    if (isNewer || saferTie) latestByTask.set(row.reply_endpoint, row);
+  }
+  return [...latestByTask.values()];
 }
 
 export function validateRegisterContract(response, provider = 'zylos') {
@@ -99,6 +141,48 @@ export function createBridge(initialConfig, dependencies = {}) {
     return result.ok;
   }
 
+  async function listScheduledTasks() {
+    const result = await runScript(SCHEDULER_CLI, [
+      'list', '--json', '--reply-channel', 'multica',
+    ]);
+    if (!result.ok) {
+      throw new Error(`Scheduler reconciliation list failed: ${result.stderr.slice(0, 200)}`);
+    }
+    let rows;
+    try {
+      rows = JSON.parse(result.stdout);
+    } catch {
+      throw new Error('Scheduler list contract mismatch: output was not valid JSON');
+    }
+    return selectLatestMulticaSchedulerRows(rows);
+  }
+
+  async function reconcileScheduledTasks() {
+    const rows = await listScheduledTasks();
+    for (const row of rows) {
+      if (row.status !== 'failed') continue;
+      const taskId = row.reply_endpoint;
+      const taskStatus = await request(
+        config,
+        'GET',
+        `/api/daemon/tasks/${encodeURIComponent(taskId)}/status`,
+      );
+      if (!taskStatus || typeof taskStatus.status !== 'string') {
+        throw new Error(`Multica task status contract mismatch for ${taskId}`);
+      }
+      if (!RECONCILABLE_TASK_STATUSES.has(taskStatus.status)) continue;
+      const detail = String(row.last_error || 'unknown scheduler failure').slice(0, 300);
+      await request(config, 'POST', `/api/daemon/tasks/${encodeURIComponent(taskId)}/fail`, {
+        error: `scheduler handoff failed: ${detail}`,
+        failure_reason: 'runtime_offline',
+      });
+      log('WARN', 'failed scheduler handoff reconciled to Multica', {
+        scheduler_task_id: row.id,
+        task_id: taskId,
+      });
+    }
+  }
+
   async function fetchIssue(issueId) {
     try {
       return await request(config, 'GET', `/api/issues/${encodeURIComponent(issueId)}`, undefined, {
@@ -160,6 +244,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   async function tick() {
     if (!runtimeId) await register();
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
+    await reconcileScheduledTasks();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
       daemon_id: config.daemon_id,
       runtime_ids: [runtimeId],
@@ -215,7 +300,18 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
   }
 
-  return { deliverToC4, handleTask, register, run, scheduleDelivery, stop, tick, updateConfig };
+  return {
+    deliverToC4,
+    handleTask,
+    listScheduledTasks,
+    reconcileScheduledTasks,
+    register,
+    run,
+    scheduleDelivery,
+    stop,
+    tick,
+    updateConfig,
+  };
 }
 
 async function main() {

@@ -47,10 +47,14 @@ Required fields are `base_url`, `pat`, `workspace_id`, `daemon_id`, and
 The configure and migration hooks use temp-file-plus-rename writes and enforce
 mode 0600.
 
-## Due-date release gate
+## Due-date reconciliation
 
-Future due-date registration is implemented, but terminal scheduler failure
-reconciliation is intentionally absent until zylos-core #761 provides the
-supported `list --json --reply-channel` contract. The component must not parse
-human scheduler output, import scheduler internals, or read the scheduler DB.
-That reconciliation slice is required before v0.1.0 is released.
+The bridge enumerates scheduler handoffs through the supported
+`list --json --reply-channel multica` contract. Rows are constrained to
+one-time Multica handoffs and reduced to the latest `next_run_at` per
+`reply_endpoint`. A failed latest row triggers a Multica task-status preflight;
+only an active parent is failed with `failure_reason: runtime_offline`, allowing
+the server's existing retry policy to redispatch it. Terminal parents are
+skipped, making repeated ticks and restarts idempotent without local mapping.
+The component never parses scheduler human output, imports scheduler internals,
+or reads the scheduler database.

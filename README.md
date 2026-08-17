@@ -17,15 +17,20 @@
 - Bridges Multica issue and web-chat tasks into C4 with standard reply routing.
 - Preserves server-side redispatch semantics when local delivery fails.
 - Supports future due-date handoff through the Zylos scheduler.
+- Reconciles failed future handoffs back to Multica for eligible redispatch.
 - Reports completion, progress, and failure directly to the Multica daemon API.
 - Stores the PAT only in a mode-0600 component config file.
 
-## Release gate
+## Due-date reconciliation
 
-The current development branch intentionally excludes failed scheduler-handoff
-reconciliation. That slice depends on zylos-core #761 and remains a hard gate
-for the v0.1.0 release. The component does not parse scheduler human output,
-import scheduler internals, or read `scheduler.db`.
+The bridge enumerates its one-time handoffs through the scheduler's supported
+`list --json --reply-channel multica` interface. For the latest handoff of each
+Multica task, a terminal scheduler failure is reconciled only while the parent
+task is still active, then reported with `failure_reason: runtime_offline` so
+Multica can redispatch when its retry policy permits. The bridge keeps no local
+mapping, so the same status preflight remains safe across repeated ticks and
+process restarts. It does not parse scheduler human output, import scheduler
+internals, or read `scheduler.db`.
 
 ## Install
 
