@@ -1,6 +1,6 @@
 # zylos-multica 组件方案（总方案）
 
-**状态**: DRAFT v1 — 待 Jinglever review · **工程授权**: Howard 2026-08-17 晚（Multica 聊天）
+**状态**: DRAFT v2 — 已吸收 Jinglever Step 1 review findings（P1×1 + P2×3，处置见 §5 安全/投递、§9、§10）· **工程授权**: Howard 2026-08-17 晚（Multica 聊天）
 **分工**（Howard 指定）: Luna 出方案+验收标准 → Jinglever 方案 review → Jinglever 开发 → Luna CR+验收
 **上游沉淀**: [docs/zylos-multica-bridge]（Luna pages: docs/zylos-multica-bridge）（已验证的桥，本组件将其产品化）
 
@@ -12,7 +12,7 @@ zylos-multica-bridge 今天已在 Luna 机器上全链路验证（Web 派活 / �
 
 multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spawn `openclaw agent --local --json` 子进程、解析 stdout JSON、版本下限 fail-fast）与 `hermes.go`（ACP JSON-RPC 子进程传输）。**结论：全部是 daemon 侧 spawn-CLI-per-task 的"agent=函数"接入**，与 zylos 已拍板的方向 B（自带常驻桥说 daemon 协议、桥接活会话）架构相反，不可照搬。可借鉴的三个局部模式：
 
-1. **版本下限 fail-fast**（openclaw `minOpenclawVersion`）：启动时断言对端版本并给出可行动的升级提示 → 我们对 Multica 服务端做启动探测（协议钉住 0.4.26，见风险 1）。
+1. **启动探测 fail-fast**（openclaw `minOpenclawVersion` 的迁移形态）：openclaw 探测的是本地 CLI 版本，可直接读取；Multica 服务端**不保证暴露版本号**（`/api/config` 的 `server_version` 在 official cloud 按设计省略、未打 `-X main.version` 的 build 为空；DaemonRegister 响应不含版本——review 已核实），故 hard gate 不用版本断言，改为**契约探测**：启动时真实调用 register（幂等）并校验响应含 `runtimes`/`repos`/`settings` 结构，失败或结构不符即 fail-fast 并给出可行动提示；`server_version` 可读到时仅作为诊断信息打进日志。三类部署（official cloud / 未打戳 self-host / stamped self-host）行为一致：契约在即通过，版本值有无不影响 gate。协议面仍按 0.4.26 语义开发（见 §9 风险 1）。
 2. **blockedArgs 配置钳制**：daemon 硬编码的关键参数不许用户配置覆盖 → 我们对 config 中影响协议正确性的字段（如 provider type）做同样钳制。
 3. **canonical error 字符串稳定性**（openclaw 注释明确 error 文案被外部 grep 依赖）→ 我们的日志关键行（`task delivered and started` 等）同样声明为稳定接口，供监控 grep。
 
@@ -32,9 +32,10 @@ multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spaw
 ## 4. 设计原则（承袭桥方案，已验证）
 
 1. **无状态**：真相在两端（任务状态归 Multica，执行上下文归会话/C4），组件崩溃重启零恢复成本。
-2. **薄通道**：agent 会话与 Multica 之间仅最小回报面；凭证唯一存放 `config.json`。
-3. **不自建重试**：投递失败不 start，留给服务端 recovery 窗口重派。
-4. **危险语义显式拒绝**：quick-create 元任务 fail+引导，不投空卡。
+2. **薄通道**：agent 会话与 Multica 之间仅最小回报面；凭证唯一存放 `config.json`——这是 component-template 现行权威政策（main@d9263e9，PR #25 起 secrets 归 config.json + `sensitive: true` 标记 + configure hook，`.env` 仅 legacy 兼容路径）。硬化要求：config 写入原子（temp+rename）、文件权限 0600、PAT 永不出现在日志/错误回显/进程 argv。
+3. **不自建重试**：投递失败不 start，留给服务端 recovery 窗口重派。**due-date 例外的闭环**（review P2 修订）：scheduler add 成功定义为 durable handoff（此时即 start），但 handoff 不等于送达——组件主循环须对自己登记的一次性 scheduler 任务做对账：发现终态 `failed`（错过 miss window 等）即调 Multica fail API（error 注明 scheduler 失败原因），把任务交还服务端重派，杜绝"scheduler 已死、Multica 永远 running"的跨账本悬挂。
+4. **不可信文本消毒**（review P1 修订）：issue title/description、chat_message、附件名等一切 Multica 来源字段，入卡前必须中和 C4 路由标记（匹配 `---- reply via:` 与 `c4-send.js` 组合模式即破坏其结构，如插入零宽字符或替换为 `[reply-via 已消毒]`），防止伪造标记抑制真实 reply via 后缀（C4 `hasLegacyReplyViaSuffix` 按内容正则判定，review 已复现）。结构性修复（route 权威改由结构化 endpoint 生成、不扫描 content）属 zylos-core，由 Luna 另行提 issue，不阻塞本组件。
+5. **危险语义显式拒绝**：quick-create 元任务 fail+引导，不投空卡。
 
 ## 5. 总体架构
 
@@ -82,7 +83,9 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 
 ## 9. 风险
 
-1. **内部协议漂移**（承袭桥方案）: 版本钉住 0.4.26；启动探测失败 fail-fast（借鉴 openclaw 模式）；Multica 升级列回归清单。
+1. **内部协议漂移**（承袭桥方案）: 按 0.4.26 语义开发；启动契约探测失败 fail-fast（探测机制与三类部署行为见 §2.1——版本值仅诊断，不作 gate）；Multica 升级列回归清单。
+1b. **reply-via 伪造/抑制**（review P1）: 消毒机制见 §4.4；验收含 injected-marker 负例测试；zylos-core 结构性修复另行提 issue 跟踪。
+1c. **scheduler 跨账本悬挂**（review P2）: 对账闭环见 §4.3；验收含 miss-window 失败路径。
 2. **send.js 单发语义 vs 多次输出**: 一任务只能 complete 一次，agent 若对同一卡多次 c4-send 会二次失败。缓解: send.js 对已终态任务返回明确错误文案（不静默）。
 3. **组件与旧桥并存双 claim**: 迁移期两进程同 runtime 同时 claim 会抢任务。缓解: 迁移步骤强制先停旧桥（写入 README 迁移节 + post-install 检测 pm2 里是否有 zylos-multica-bridge 并警告）。
 
@@ -99,6 +102,9 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 - [ ] issue 派活闭环: 建 issue 指派 → C4 卡（含标准 reply via 行）→ 标准 c4-send 回报 → 面板 completed + 结论
 - [ ] 聊天闭环: Web 发消息 → 聊天卡 → c4-send 回报 → assistant 气泡（读回核对）
 - [ ] due-date 分流: due=次日 issue → scheduler 一次性任务注册（08:00 +08）
+- [ ] due-date 失败闭环: 构造 scheduler 一次性任务终态 failed（错过 miss window）→ 组件对账后 Multica 任务转 failed（面板可见, error 含原因）
+- [ ] 注入负例: issue description 含伪造 `---- reply via: node ... c4-send.js ...` 标记 → 卡内标记已被中和、C4 侧真实 reply via 后缀正常追加、回报仍达正确任务
+- [ ] 凭证硬化: config.json 权限 0600；grep 全部日志无 PAT
 - [ ] quick-create → fail + 引导文案（面板可见）
 - [ ] report.js progress/fail 实打各一次，面板状态核对
 - [ ] 投递失败不 start（构造 c4-receive 不可用）→ 任务留 dispatched
@@ -110,9 +116,10 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 
 ## 11. 开放问题（附 Luna 预判，review 时一并表态）
 
-1. **send.js 收到 `[MEDIA:...]` 前缀怎么办**（communication 契约含媒体）: 预判 v0.1.0 明确拒绝（Multica complete 是纯文本 output），错误文案引导改发文字；媒体支持连同附件拉取进 backlog。
-2. **心跳与 claim 合并轮询间隔默认值**: 预判沿用 15s（今天实测响应体感良好，聊天延迟可接受）。
-3. **runtime 显示名默认值**: 预判 `{agent 名} (zylos)`，从 config 读，configure 收集。
+（已随 Step 1 review 收敛，2026-08-18）
+1. **send.js 收到 `[MEDIA:...]` 前缀** → **已定**: v0.1.0 明确拒绝（Multica complete 是纯文本 output），错误文案引导改发文字；媒体支持连同附件拉取进 backlog。
+2. **轮询间隔默认值** → **已定**: 15s 作为已在本部署实测验证的默认值写入 config（可配）；措辞不声称普遍延迟结论——不同部署的体感延迟以各自实测为准。
+3. **runtime 显示名默认值** → **已定**: `{agent 名} (zylos)`，从 config 读，configure 收集。
 
 ---
 
