@@ -1,62 +1,59 @@
 #!/usr/bin/env node
-/**
- * Post-upgrade hook for zylos-multica
- *
- * Called by Claude after CLI upgrade completes (zylos upgrade --json).
- * CLI handles: stop service, backup, file sync, npm install, manifest.
- *
- * This hook handles component-specific migrations:
- * - Config schema migrations
- * - Data format updates
- *
- * Note: Service restart is handled by Claude after this hook.
- */
+/** Idempotent Multica config migrations. */
 
-import fs from 'fs';
-import path from 'path';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/multica');
-const configPath = path.join(DATA_DIR, 'config.json');
+const configPath = path.join(os.homedir(), 'zylos/components/multica/config.json');
 
-console.log('[post-upgrade] Running multica-specific migrations...\n');
-
-// Config migrations
-if (fs.existsSync(configPath)) {
+function atomicWrite(value) {
+  const tempPath = `${configPath}.tmp-${process.pid}`;
   try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    let migrated = false;
-    const migrations = [];
-
-    // Migration 1: Ensure enabled field
-    if (config.enabled === undefined) {
-      config.enabled = true;
-      migrated = true;
-      migrations.push('Added enabled field');
-    }
-
-    // Add more migrations as needed for future versions
-    // Migration N: Example
-    // if (config.newField === undefined) {
-    //   config.newField = 'default';
-    //   migrated = true;
-    //   migrations.push('Added newField');
-    // }
-
-    // Save if migrated
-    if (migrated) {
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      console.log('Config migrations applied:');
-      migrations.forEach(m => console.log('  - ' + m));
-    } else {
-      console.log('No config migrations needed.');
-    }
-  } catch (err) {
-    console.error('Config migration failed:', err.message);
-    process.exit(1);
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, configPath);
+    fs.chmodSync(configPath, 0o600);
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch {}
+    throw error;
   }
-} else {
-  console.log('No config file found, skipping migrations.');
 }
 
-console.log('\n[post-upgrade] Complete!');
+if (!fs.existsSync(configPath)) {
+  console.log('[multica] No config found; nothing to migrate');
+  process.exit(0);
+}
+
+try {
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const migrations = [];
+  if (config.enabled === undefined) {
+    config.enabled = true;
+    migrations.push('added enabled');
+  }
+  if (config.poll_interval_s === undefined) {
+    config.poll_interval_s = 15;
+    migrations.push('added poll_interval_s');
+  }
+  if (!config.daemon_id) {
+    config.daemon_id = crypto.randomUUID();
+    migrations.push('generated daemon_id');
+  }
+  if (config.runtime?.type !== undefined) {
+    config._legacy_runtime_type ??= config.runtime.type;
+    delete config.runtime.type;
+    migrations.push('preserved runtime.type as _legacy_runtime_type; provider is fixed to zylos');
+  }
+  if (migrations.length) {
+    atomicWrite(config);
+    console.log(`[multica] Applied migrations: ${migrations.join('; ')}`);
+  } else {
+    fs.chmodSync(configPath, 0o600);
+    console.log('[multica] No migrations needed');
+  }
+} catch (error) {
+  console.error(`[multica] Post-upgrade failed: ${error.message}`);
+  process.exit(1);
+}

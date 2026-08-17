@@ -1,78 +1,84 @@
 #!/usr/bin/env node
-/**
- * Configure hook for zylos-multica
- *
- * Called by zylos after collecting SKILL.md config.required values.
- * Receives a JSON object on stdin and writes component-owned config.json.
- *
- * Example stdin:
- *   { "MULTICA_API_KEY": "secret" }
- */
+/** Non-interactive install configuration hook. */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/multica');
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const COMPONENT_PREFIX = 'MULTICA_';
-
-const DEFAULT_CONFIG = {
-  enabled: true
-};
+const CONFIG_PATH = path.join(os.homedir(), 'zylos/components/multica/config.json');
+const DEFAULTS = { enabled: true, poll_interval_s: 15 };
 
 function readStdin() {
   return new Promise((resolve, reject) => {
     let input = '';
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', chunk => { input += chunk; });
+    process.stdin.on('data', (chunk) => { input += chunk; });
     process.stdin.on('end', () => resolve(input));
     process.stdin.on('error', reject);
   });
 }
 
-function readJsonFile(filePath, fallback) {
+function atomicWrite(value) {
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  const tempPath = `${CONFIG_PATH}.tmp-${process.pid}`;
   try {
-    if (!fs.existsSync(filePath)) return { ...fallback };
-    return { ...fallback, ...JSON.parse(fs.readFileSync(filePath, 'utf8')) };
-  } catch (err) {
-    throw new Error(`Failed to read ${filePath}: ${err.message}`);
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, CONFIG_PATH);
+    fs.chmodSync(CONFIG_PATH, 0o600);
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch {}
+    throw error;
   }
-}
-
-function writeJsonFile(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2) + '\n');
-  fs.renameSync(tmpPath, filePath);
-}
-
-function configKeyFromRequiredName(name) {
-  return name
-    .replace(new RegExp(`^${COMPONENT_PREFIX}`), '')
-    .toLowerCase();
 }
 
 try {
   const raw = (await readStdin()).trim();
-  if (!raw) {
-    throw new Error('Expected stdin JSON object with collected config values');
-  }
-
+  if (!raw) throw new Error('Expected a JSON object on stdin');
   const collected = JSON.parse(raw);
   if (!collected || Array.isArray(collected) || typeof collected !== 'object') {
     throw new Error('Configure input must be a JSON object');
   }
-
-  const config = readJsonFile(CONFIG_PATH, DEFAULT_CONFIG);
-  for (const [name, value] of Object.entries(collected)) {
-    if (value === undefined || value === null || value === '') continue;
-    config[configKeyFromRequiredName(name)] = value;
+  const existing = fs.existsSync(CONFIG_PATH)
+    ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))
+    : {};
+  const config = { ...DEFAULTS, ...existing };
+  const mappings = {
+    MULTICA_BASE_URL: 'base_url',
+    MULTICA_PAT: 'pat',
+    MULTICA_WORKSPACE_ID: 'workspace_id',
+    MULTICA_DAEMON_ID: 'daemon_id',
+    MULTICA_POLL_INTERVAL_S: 'poll_interval_s',
+  };
+  for (const [source, target] of Object.entries(mappings)) {
+    const value = collected[source];
+    if (value !== undefined && value !== null && value !== '') config[target] = value;
   }
-
-  writeJsonFile(CONFIG_PATH, config);
-  console.log(`[configure] Wrote config to ${CONFIG_PATH}`);
-} catch (err) {
-  console.error(`[configure] ${err.message}`);
+  if (collected.MULTICA_RUNTIME_NAME) {
+    config.runtime = { ...(config.runtime || {}), name: collected.MULTICA_RUNTIME_NAME };
+  }
+  for (const [field, value] of [
+    ['base_url', config.base_url],
+    ['pat', config.pat],
+    ['workspace_id', config.workspace_id],
+    ['runtime.name', config.runtime?.name],
+  ]) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`Missing required configuration: ${field}`);
+    }
+  }
+  const baseUrl = new URL(config.base_url);
+  if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
+    throw new Error('base_url must be an http(s) URL without embedded credentials');
+  }
+  const pollInterval = Number(config.poll_interval_s);
+  if (!Number.isFinite(pollInterval) || pollInterval < 1 || pollInterval > 300) {
+    throw new Error('poll_interval_s must be between 1 and 300');
+  }
+  config.poll_interval_s = pollInterval;
+  atomicWrite(config);
+  console.log(`[multica] Configuration written to ${CONFIG_PATH}`);
+} catch (error) {
+  console.error(`[multica] Configure failed: ${error.message}`);
   process.exit(1);
 }

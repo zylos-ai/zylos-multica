@@ -1,54 +1,49 @@
 #!/usr/bin/env node
-/**
- * Post-install hook for zylos-multica
- *
- * Called by zylos after configure hook and CLI installation.
- * CLI handles: download, npm install, manifest, registration.
- * zylos/agent handles: config collection, configure hook, this hook, service start.
- *
- * This hook handles component-specific setup:
- * - Create subdirectories
- * - Create default config.json when no configure hook values were provided
- * - Verify required config fields if needed
- */
+/** Idempotent Multica post-install setup. */
 
+import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/multica');
+const DATA_DIR = path.join(os.homedir(), 'zylos/components/multica');
+const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
-// Minimal initial config - full defaults are in src/lib/config.js
-const INITIAL_CONFIG = {
-  enabled: true
-};
-
-console.log('[post-install] Running multica-specific setup...\n');
-
-// 1. Create subdirectories
-console.log('Creating subdirectories...');
-fs.mkdirSync(path.join(DATA_DIR, 'logs'), { recursive: true });
-// Add more subdirectories as needed
-// fs.mkdirSync(path.join(DATA_DIR, 'media'), { recursive: true });
-console.log('  - logs/');
-
-// 2. Create default config if not exists
-const configPath = path.join(DATA_DIR, 'config.json');
-if (!fs.existsSync(configPath)) {
-  console.log('\nCreating default config.json...');
-  fs.writeFileSync(configPath, JSON.stringify(INITIAL_CONFIG, null, 2));
-  console.log('  - config.json created');
-} else {
-  console.log('\nConfig already exists, skipping.');
+function atomicWrite(value) {
+  const tempPath = `${CONFIG_PATH}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, CONFIG_PATH);
+    fs.chmodSync(CONFIG_PATH, 0o600);
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch {}
+    throw error;
+  }
 }
 
-// 3. Verify required config fields (customize as needed)
-// Example: Check for required API key in config.json
-// const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-// if (!cfg.api_key) {
-//   console.log('\n[!] api_key not found in config.json');
-// }
+try {
+  fs.mkdirSync(path.join(DATA_DIR, 'logs'), { recursive: true });
+  const existing = fs.existsSync(CONFIG_PATH)
+    ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))
+    : {};
+  const config = { enabled: true, poll_interval_s: 15, ...existing };
+  let changed = !fs.existsSync(CONFIG_PATH);
+  if (!config.daemon_id) {
+    config.daemon_id = crypto.randomUUID();
+    changed = true;
+  }
+  if (changed) atomicWrite(config);
+  else fs.chmodSync(CONFIG_PATH, 0o600);
+  console.log('[multica] Post-install setup complete');
+} catch (error) {
+  console.error(`[multica] Post-install failed: ${error.message}`);
+  process.exit(1);
+}
 
-// Note: PM2 service is started by Claude after this hook completes.
-
-console.log('\n[post-install] Complete!');
+execFile('pm2', ['describe', 'zylos-multica-bridge'], { timeout: 5_000 }, (error) => {
+  if (!error) {
+    console.warn('[multica] Existing PM2 service zylos-multica-bridge detected. Stop it before starting this component to avoid duplicate claims.');
+  }
+});
