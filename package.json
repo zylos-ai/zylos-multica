@@ -1,0 +1,30 @@
+{
+  "name": "zylos-multica",
+  "version": "0.1.0",
+  "description": "Multica task-platform channel: bridges a Multica deployment to the agent's live session via the daemon protocol",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "homepage": "https://github.com/zylos-ai/zylos-multica#readme",
+  "bugs": {
+    "url": "https://github.com/zylos-ai/zylos-multica/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zylos-ai/zylos-multica.git"
+  },
+  "keywords": [
+    "zylos",
+    "multica",
+    "agent"
+  ],
+  "author": "Zylos AI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {}
+}
