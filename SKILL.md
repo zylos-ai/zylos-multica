@@ -52,6 +52,11 @@ dependencies:
 
 # Multica
 
+Requires a Zylos core containing zylos-core #762 (merge `e1b298f`) or a later
+official core release for scheduler `list --json` due-date reconciliation.
+Older cores keep ordinary Multica delivery available but log a reconciliation
+warning.
+
 Normal replies to a Multica card complete its task through the standard C4
 reply route. Use the supplemental reporter only for progress or failure:
 

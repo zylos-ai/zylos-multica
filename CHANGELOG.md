@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Multica daemon registration, heartbeat, claim, issue delivery, chat delivery,
   future due-date scheduler handoff, and server-side redispatch preservation.
+- Restart-safe reconciliation of failed due-date scheduler handoffs through the
+  supported JSON CLI, with latest-row selection and idempotent task-status
+  preflight before retryable Multica failure reporting.
 - Startup register-response contract probe for `runtimes`, `repos`, and
   `settings`.
 - Standard C4 reply routing with text completion plus supplemental progress and
@@ -25,8 +28,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep the Multica PAT out of process arguments and redact it from API errors.
 - Neutralize forged C4 `reply via` / `c4-send.js` markers before dispatch.
-
-### Upgrade Notes
-
-- Due-date failure reconciliation remains excluded until zylos-core #761 lands;
-  v0.1.0 must not be released before that hard gate is complete.
