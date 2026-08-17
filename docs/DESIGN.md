@@ -1,80 +1,56 @@
-# zylos-multica Design Document
+# zylos-multica design
 
-**Version**: v1.0.0
-**Date**: 2026-08-17
-**Author**: Zylos Team
-**Repository**: https://github.com/zylos-ai/zylos-multica
-**Status**: Draft
+## Purpose
 
----
+zylos-multica presents a Zylos agent as a Multica daemon runtime while keeping
+the agent's existing C4 session as the execution context. The bridge is
+stateless: Multica owns task state, C4 owns message delivery, and scheduler owns
+future handoffs.
 
-## 1. Overview
+## Flow
 
-Brief description of what this component does and why it exists.
-
-## 2. Architecture
-
-### 2.1 Component Structure
-
-```
-zylos-multica/
-  docs/
-    DESIGN.md         — Architecture/design notes for maintainers and reviews
-  src/
-    index.js          — Entry point (start/stop lifecycle)
-    lib/              — Core logic modules
-  scripts/
-    send.js           — Outbound message handler (communication components)
-  hooks/
-    UserPromptSubmit  — Claude Code hook for inbound messages (communication)
-    post-install.js   — Post-install setup
-    post-upgrade.js   — Post-upgrade config migration
-  SKILL.md            — Component specification for the Zylos agent
-  ecosystem.config.cjs — PM2 service configuration
+```text
+Multica daemon API
+  register -> heartbeat -> claim
+                         |
+                         +-- issue/chat -> C4 -> normal reply -> send.js -> complete
+                         +-- future due -> scheduler -> C4 -> normal reply -> complete
+                         +-- quick-create -> fail with guidance
 ```
 
-### 2.2 Data Flow
+The bridge calls `start` only after C4 accepts a direct delivery or scheduler
+accepts a durable future handoff. If both scheduler and direct C4 delivery fail,
+the task remains dispatched for Multica's server-side recovery path.
 
-Describe how data flows through the component.
+## Startup contract probe
 
-## 3. Configuration
+Registration is both idempotent setup and the compatibility probe. Startup
+requires the response to expose `runtimes` and `repos` arrays plus a `settings`
+object, and to include the registered `zylos` runtime ID. A server version, when
+present, is diagnostic only.
 
-### 3.1 Environment Variables
+## Trust boundaries
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `EXAMPLE_API_KEY` | Yes | API key for the service |
+- The PAT lives only in the mode-0600 component `config.json` and is sent in the
+  Authorization header, never process arguments.
+- Provider type and component protocol version are code-controlled and cannot
+  be overridden by configuration.
+- Multica-controlled card text is sanitized for forged C4 `reply via` and
+  `c4-send.js` markers before dispatch.
+- Child processes use `execFile` argument arrays with timeouts.
+- Multica task IDs embedded in optional report commands are shell-quoted.
 
-### 3.2 Config File
+## Configuration
 
-Located at `~/zylos/components/multica/config.json`:
+Required fields are `base_url`, `pat`, `workspace_id`, `daemon_id`, and
+`runtime.name`. `poll_interval_s` defaults to 15 and is constrained to 1–300.
+The configure and migration hooks use temp-file-plus-rename writes and enforce
+mode 0600.
 
-```json
-{
-  "enabled": true
-}
-```
+## Due-date release gate
 
-## 4. Integration with Zylos
-
-### 4.1 Lifecycle
-
-- **Start**: Called by PM2 via `ecosystem.config.cjs`
-- **Stop**: Graceful shutdown on SIGTERM
-
-### 4.2 Message Flow
-
-Describe how messages are sent and received.
-
-## 5. Security
-
-Describe security considerations (authentication, authorization, data handling).
-
-## 6. Error Handling
-
-Describe error handling strategies.
-
-## 7. Future Improvements
-
-- Improvement 1
-- Improvement 2
+Future due-date registration is implemented, but terminal scheduler failure
+reconciliation is intentionally absent until zylos-core #761 provides the
+supported `list --json --reply-channel` contract. The component must not parse
+human scheduler output, import scheduler internals, or read the scheduler DB.
+That reconciliation slice is required before v0.1.0 is released.
