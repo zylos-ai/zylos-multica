@@ -1,6 +1,6 @@
 # zylos-multica 组件方案（总方案）
 
-**状态**: DRAFT v2.2 — 二轮 review 收敛: due-date 对账接口升格为前置依赖 P-1 (zylos-core #761), fail 重派语义显式化 (runtime_offline + 边界) · **工程授权**: Howard 2026-08-17 晚（Multica 聊天）
+**状态**: DRAFT v2.3 — final check 补齐: 对账幂等机制 (GET status 前置检查) + P-1 契约补 type 字段 · **工程授权**: Howard 2026-08-17 晚（Multica 聊天）
 **分工**（Howard 指定）: Luna 出方案+验收标准 → Jinglever 方案 review → Jinglever 开发 → Luna CR+验收
 **上游沉淀**: [docs/zylos-multica-bridge]（Luna pages: docs/zylos-multica-bridge）（已验证的桥，本组件将其产品化）
 
@@ -35,8 +35,9 @@ multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spaw
 2. **薄通道**：agent 会话与 Multica 之间仅最小回报面；凭证唯一存放 `config.json`——这是 component-template 现行权威政策（main@d9263e9，PR #25 起 secrets 归 config.json + `sensitive: true` 标记 + configure hook，`.env` 仅 legacy 兼容路径）。硬化要求：config 写入原子（temp+rename）、文件权限 0600、PAT 永不出现在日志/错误回显/进程 argv。
 3. **不自建重试**：投递失败不 start，留给服务端 recovery 窗口重派。**due-date 例外的闭环**（review P2 修订）：scheduler add 成功定义为 durable handoff（此时即 start），但 handoff 不等于送达——组件主循环须对自己登记的一次性 scheduler 任务做对账：发现终态 `failed`（错过 miss window 等）即调 Multica fail API（error 注明 scheduler 失败原因），把任务交还服务端重派，杜绝"scheduler 已死、Multica 永远 running"的跨账本悬挂。
    **对账接口 = 显式前置依赖**（review 二轮收敛，替换 v2.1 的 database.js 只读旁路——该路径属内部接口耦合，弃用）：
-   - **前置依赖 P-1（zylos-core #761，最小切口）**：scheduler `cli.js list --json [--reply-channel <ch>]`，输出完整字段（id 全量不截断 / status / last_error / reply_channel / reply_endpoint / next_run_at）。这是唯一受支持的机器可读接口；组件开发**不得**解析人类 stdout、import scheduler 内部模块或直读 scheduler.db。
+   - **前置依赖 P-1（zylos-core #761，最小切口）**：scheduler `cli.js list --json [--reply-channel <ch>]`，输出完整字段（id 全量不截断 / **type** / status / last_error / reply_channel / reply_endpoint / next_run_at）。这是唯一受支持的机器可读接口；组件开发**不得**解析人类 stdout、import scheduler 内部模块或直读 scheduler.db。
    - **对账机制（零本地状态，重启天然可枚举）**：组件不落任何映射——`list --json --reply-channel multica` 后按完整身份条件过滤 `type='one-time' AND reply_channel='multica'`，`reply_endpoint` 列本身就是 Multica task id（注册时已传），身份/状态/失败原因一次拿全；同一 Multica task 多次登记（重派后重登记）以 `next_run_at` 最新一条为准，防同名/同 endpoint 碰撞。restart 后首个 tick 即全量对账，"零恢复成本"由 ledger 枚举而非内存映射保证。
+   - **对账幂等（不重复 fail 的实现机制，非仅验收目标）**：scheduler 的 failed row 永久留存，每个 tick 都会重新枚举到——对每条 failed row，先调 Multica 现有 `GET /api/daemon/tasks/{taskId}/status`（handler/daemon.go GetTaskStatus），仅当 parent 仍为 `running`/`dispatched`/`waiting_local_directory` 时才调 fail；已 terminal（failed/completed/cancelled）视为已对账跳过。依据：`FailAgentTask` SQL 守卫 `status IN ('dispatched','running','waiting_local_directory')`（agent.sql:1083），对已 failed 的 parent 再 fail 会 no rows → handler 500 → 桥 tick catch 进 backoff，同一行可持续卡主循环——status 前置检查在源头消除该路径，且天然覆盖"重启后再对账"场景。
    - **排期约束**：P-1 属 zylos-core，须 Howard 批准后由 Luna 提 PR（走常规 Jinglever review）。Step 2 其余范围（主循环/回报/包装）不被 P-1 阻塞可先行开发；**due-date 对账切片在 P-1 落地后实现**，且 v0.1.0 发布验收含对账用例——接口未落地则 v0.1.0 不发布，不带着悬挂洞出厂。
    - SKILL.md `dependencies` 显式声明 `scheduler`（版本下限=含 #761 的 zylos-core 版本，落地后回填具体号）+ `comm-bridge`。
 4. **不可信文本消毒**（review P1 修订）：issue title/description、chat_message、附件名等一切 Multica 来源字段，入卡前必须中和 C4 路由标记（匹配 `---- reply via:` 与 `c4-send.js` 组合模式即破坏其结构，如插入零宽字符或替换为 `[reply-via 已消毒]`），防止伪造标记抑制真实 reply via 后缀（C4 `hasLegacyReplyViaSuffix` 按内容正则判定，review 已复现）。结构性修复（route 权威改由结构化 endpoint 生成、不扫描 content）属 zylos-core，由 Luna 另行提 issue，不阻塞本组件。
@@ -110,7 +111,8 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 - [ ] due-date 分流: due=次日 issue → scheduler 一次性任务注册（08:00 +08）
 - [ ] due-date 失败闭环（P-1 落地后）: 构造 scheduler 一次性任务终态 failed（错过 miss window）→ 组件经 `list --json` 对账 → 调 fail 显式传 `failure_reason: "runtime_offline"` → **retry child 实际创建并进入 queued** → 桥重新 claim → due 已非 future → 直投 C4 送达（全链路核对, 不止父任务 failed）
 - [ ] restart 对账: 登记 due-date 任务后重启组件（清内存映射）→ 首个 tick 经 ledger 枚举恢复全部自身任务并正确对账
-- [ ] retry 不满足边界: retryEligible 不满足（如 attempt 预算耗尽）时父任务终态 failed 面板可见, 组件不重复调 fail（幂等）
+- [ ] retry 不满足边界: retryEligible 不满足（如 attempt 预算耗尽）时父任务终态 failed 面板可见
+- [ ] 对账幂等: failed scheduler row 存在时连续两轮 tick + 重启后再一轮 tick → fail 仅在 parent 非 terminal 的首轮调用一次（经 GET status 前置检查）, 后续轮次跳过, 主循环 claim 不受影响
 - [ ] 注入负例: issue description 含伪造 `---- reply via: node ... c4-send.js ...` 标记 → 卡内标记已被中和、C4 侧真实 reply via 后缀正常追加、回报仍达正确任务
 - [ ] 凭证硬化: config.json 权限 0600；grep 全部日志无 PAT
 - [ ] quick-create → fail + 引导文案（面板可见）
