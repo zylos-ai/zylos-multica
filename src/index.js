@@ -158,28 +158,44 @@ export function createBridge(initialConfig, dependencies = {}) {
   }
 
   async function reconcileScheduledTasks() {
-    const rows = await listScheduledTasks();
+    let rows;
+    try {
+      rows = await listScheduledTasks();
+    } catch (error) {
+      log('WARN', 'scheduler reconciliation list failed; continuing to claim', {
+        error: String(error?.message || error).slice(0, 200),
+      });
+      return;
+    }
     for (const row of rows) {
       if (row.status !== 'failed') continue;
       const taskId = row.reply_endpoint;
-      const taskStatus = await request(
-        config,
-        'GET',
-        `/api/daemon/tasks/${encodeURIComponent(taskId)}/status`,
-      );
-      if (!taskStatus || typeof taskStatus.status !== 'string') {
-        throw new Error(`Multica task status contract mismatch for ${taskId}`);
+      try {
+        const taskStatus = await request(
+          config,
+          'GET',
+          `/api/daemon/tasks/${encodeURIComponent(taskId)}/status`,
+        );
+        if (!taskStatus || typeof taskStatus.status !== 'string') {
+          throw new Error(`Multica task status contract mismatch for ${taskId}`);
+        }
+        if (!RECONCILABLE_TASK_STATUSES.has(taskStatus.status)) continue;
+        const detail = String(row.last_error || 'unknown scheduler failure').slice(0, 300);
+        await request(config, 'POST', `/api/daemon/tasks/${encodeURIComponent(taskId)}/fail`, {
+          error: `scheduler handoff failed: ${detail}`,
+          failure_reason: 'runtime_offline',
+        });
+        log('WARN', 'failed scheduler handoff reconciled to Multica', {
+          scheduler_task_id: row.id,
+          task_id: taskId,
+        });
+      } catch (error) {
+        log('WARN', 'scheduler handoff reconciliation failed; continuing', {
+          scheduler_task_id: row.id,
+          task_id: taskId,
+          error: String(error?.message || error).slice(0, 200),
+        });
       }
-      if (!RECONCILABLE_TASK_STATUSES.has(taskStatus.status)) continue;
-      const detail = String(row.last_error || 'unknown scheduler failure').slice(0, 300);
-      await request(config, 'POST', `/api/daemon/tasks/${encodeURIComponent(taskId)}/fail`, {
-        error: `scheduler handoff failed: ${detail}`,
-        failure_reason: 'runtime_offline',
-      });
-      log('WARN', 'failed scheduler handoff reconciled to Multica', {
-        scheduler_task_id: row.id,
-        task_id: taskId,
-      });
     }
   }
 

@@ -34,6 +34,12 @@ internals, or read `scheduler.db`.
 
 ## Install
 
+Due-date reconciliation requires a Zylos core that includes
+[zylos-core #762](https://github.com/zylos-ai/zylos-core/pull/762), specifically
+merge `e1b298f` or a later official core release. On older cores, ordinary
+Multica delivery continues, but scheduler reconciliation is unavailable and
+logs a warning because `scheduler list --json` is not supported.
+
 ```bash
 zylos add zylos-ai/zylos-multica
 ```

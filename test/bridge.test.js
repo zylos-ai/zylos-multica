@@ -282,6 +282,139 @@ test('every terminal Multica status skips duplicate failure reporting', async ()
   }
 });
 
+test('a poisoned failed row does not block later reconciliation or claim', async () => {
+  let claimCount = 0;
+  const calls = [];
+  const bridge = createBridge(config, {
+    request: async (_config, method, apiPath, body) => {
+      calls.push({ method, apiPath, body });
+      if (apiPath === '/api/daemon/register') {
+        return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }] };
+      }
+      if (apiPath === '/api/daemon/tasks/task-gone/status') {
+        const error = new Error('GET task-gone -> HTTP 404');
+        error.status = 404;
+        throw error;
+      }
+      if (apiPath === '/api/daemon/tasks/task-rejected/status') return { status: 'running' };
+      if (apiPath === '/api/daemon/tasks/task-rejected/fail') {
+        const error = new Error('POST task-rejected -> HTTP 500');
+        error.status = 500;
+        throw error;
+      }
+      if (apiPath === '/api/daemon/tasks/task-live/status') return { status: 'running' };
+      if (apiPath === '/api/daemon/tasks/claim') {
+        claimCount++;
+        return { tasks: [] };
+      }
+      return {};
+    },
+    runScript: async () => ({
+      ok: true,
+      stderr: '',
+      stdout: JSON.stringify([
+        {
+          id: 'scheduler-poison',
+          type: 'one-time',
+          status: 'failed',
+          last_error: 'Missed execution window',
+          reply_channel: 'multica',
+          reply_endpoint: 'task-gone',
+          next_run_at: 100,
+        },
+        {
+          id: 'scheduler-rejected',
+          type: 'one-time',
+          status: 'failed',
+          last_error: 'Missed execution window',
+          reply_channel: 'multica',
+          reply_endpoint: 'task-rejected',
+          next_run_at: 150,
+        },
+        {
+          id: 'scheduler-live',
+          type: 'one-time',
+          status: 'failed',
+          last_error: 'Missed execution window',
+          reply_channel: 'multica',
+          reply_endpoint: 'task-live',
+          next_run_at: 200,
+        },
+      ]),
+    }),
+  });
+
+  await bridge.tick();
+
+  assert.equal(claimCount, 1);
+  assert.ok(calls.some((call) => call.apiPath === '/api/daemon/tasks/task-live/fail'));
+});
+
+test('a permanently missing Multica task never blocks later claim ticks', async () => {
+  let claimCount = 0;
+  let statusCount = 0;
+  const bridge = createBridge(config, {
+    request: async (_config, _method, apiPath) => {
+      if (apiPath === '/api/daemon/register') {
+        return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }] };
+      }
+      if (apiPath === '/api/daemon/tasks/task-gone/status') {
+        statusCount++;
+        const error = new Error('GET task-gone -> HTTP 404');
+        error.status = 404;
+        throw error;
+      }
+      if (apiPath === '/api/daemon/tasks/claim') {
+        claimCount++;
+        return { tasks: [] };
+      }
+      return {};
+    },
+    runScript: async () => ({
+      ok: true,
+      stderr: '',
+      stdout: JSON.stringify([{
+        id: 'scheduler-poison',
+        type: 'one-time',
+        status: 'failed',
+        last_error: 'Missed execution window',
+        reply_channel: 'multica',
+        reply_endpoint: 'task-gone',
+        next_run_at: 100,
+      }]),
+    }),
+  });
+
+  await bridge.tick();
+  await bridge.tick();
+  await bridge.tick();
+
+  assert.equal(statusCount, 3);
+  assert.equal(claimCount, 3);
+});
+
+test('an incompatible scheduler list contract warns without blocking claim', async () => {
+  let claimCount = 0;
+  const bridge = createBridge(config, {
+    request: async (_config, _method, apiPath) => {
+      if (apiPath === '/api/daemon/register') {
+        return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }] };
+      }
+      if (apiPath === '/api/daemon/tasks/claim') {
+        claimCount++;
+        return { tasks: [] };
+      }
+      return {};
+    },
+    runScript: async () => ({ ok: true, stderr: '', stdout: 'human scheduler output' }),
+  });
+
+  await bridge.tick();
+  await bridge.tick();
+
+  assert.equal(claimCount, 2);
+});
+
 test('scheduler reconciliation fails loudly on an incompatible JSON contract', async () => {
   const bridge = createBridge(config, {
     runScript: async () => ({ ok: true, stderr: '', stdout: '[{"id":"incomplete"}]' }),
