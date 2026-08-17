@@ -12,16 +12,30 @@ const config = {
   runtime: { type: 'zylos', name: 'Jinglever (zylos)', version: '0.1.0' },
 };
 
-test('register probe accepts the expected contract and rejects partial responses', () => {
+test('register probe validates only the consumed runtime contract', () => {
   assert.equal(validateRegisterContract({
     runtimes: [{ id: 'runtime-1', provider: 'zylos' }],
-    repos: [],
-    settings: {},
+    settings: null,
   }), 'runtime-1');
   assert.throws(
-    () => validateRegisterContract({ runtimes: [], settings: {} }),
+    () => validateRegisterContract({ settings: {} }),
     /contract mismatch/,
   );
+  assert.throws(
+    () => validateRegisterContract({ runtimes: [] }),
+    /did not include the 'zylos' runtime/,
+  );
+});
+
+test('register accepts null optional settings without masking the runtime', async () => {
+  const bridge = createBridge(config, {
+    request: async () => ({
+      runtimes: [{ id: 'runtime-1', provider: 'zylos' }],
+      repos: [],
+      settings: null,
+    }),
+  });
+  await bridge.register();
 });
 
 test('issue delivery uses a real C4 reply route and starts only after delivery', async () => {
@@ -65,7 +79,7 @@ test('delivery failure leaves the Multica task dispatched', async () => {
   assert.ok(!calls.some((call) => call.apiPath.endsWith('/start')));
 });
 
-test('future due date schedules before start and falls back to C4 on scheduler failure', async () => {
+test('future due date schedules with the full task id before start and falls back to C4', async () => {
   const starts = [];
   const scripts = [];
   const due = new Date('2030-01-01T00:00:00.000Z').toISOString();
@@ -82,11 +96,13 @@ test('future due date schedules before start and falls back to C4 on scheduler f
       return { ok: !isScheduler, stdout: '', stderr: isScheduler ? 'down' : '' };
     },
   });
-  assert.equal(await bridge.handleTask({ id: 'task-3', issue_id: 'issue-2' }), true);
+  const taskId = 'task-3-with-a-long-stable-id';
+  assert.equal(await bridge.handleTask({ id: taskId, issue_id: 'issue-2' }), true);
   assert.equal(scripts.length, 2);
   assert.ok(scripts[0].script.endsWith('/scheduler/scripts/cli.js'));
+  assert.equal(scripts[0].args[scripts[0].args.indexOf('--name') + 1], `multica-task-${taskId}`);
   assert.ok(scripts[1].script.endsWith('/comm-bridge/scripts/c4-receive.js'));
-  assert.deepEqual(starts, ['/api/daemon/tasks/task-3/start']);
+  assert.deepEqual(starts, [`/api/daemon/tasks/${taskId}/start`]);
 });
 
 test('quick-create meta-task is failed with guidance and never delivered', async () => {

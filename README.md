@@ -55,6 +55,10 @@ Runtime configuration is stored at `~/zylos/components/multica/config.json`:
 }
 ```
 
+To disable the component, stop its managed process with `pm2 stop zylos-multica`.
+Changing `enabled` to `false` by itself makes the process exit, so a PM2 process
+configured with automatic restarts will otherwise retry it until `max_restarts`.
+
 The provider type is fixed to `zylos` and cannot be overridden by config.
 
 ## Usage

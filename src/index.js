@@ -30,12 +30,10 @@ function runNodeScript(script, args, timeout = 20_000) {
 
 export function validateRegisterContract(response, provider = 'zylos') {
   const valid = response && typeof response === 'object'
-    && Array.isArray(response.runtimes)
-    && Array.isArray(response.repos)
-    && response.settings && typeof response.settings === 'object' && !Array.isArray(response.settings);
+    && Array.isArray(response.runtimes);
   if (!valid) {
     throw new Error(
-      "Multica register contract mismatch: expected 'runtimes', 'repos', and 'settings'. "
+      "Multica register contract mismatch: expected 'runtimes'. "
       + 'Verify that this deployment supports the Multica 0.4.26 daemon protocol.',
     );
   }
@@ -70,7 +68,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       }],
     });
     runtimeId = validateRegisterContract(response, 'zylos');
-    const serverVersion = response.server_version ?? response.settings.server_version;
+    const serverVersion = response.server_version ?? response.settings?.server_version;
     log('INFO', 'registered', { runtime_id: runtimeId, ...(serverVersion ? { server_version: serverVersion } : {}) });
   }
 
@@ -88,7 +86,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     const result = await runScript(SCHEDULER_CLI, [
       'add', content,
       '--at', dueAt.toISOString(),
-      '--name', `multica-task-${String(task.id).slice(0, 8)}`,
+      '--name', `multica-task-${String(task.id)}`,
       '--reply-channel', 'multica',
       '--reply-endpoint', String(task.id),
     ]);
