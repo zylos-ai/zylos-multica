@@ -12,7 +12,7 @@ lifecycle:
   service:
     type: pm2
     name: zylos-multica
-    entry: src/index.js
+    entry: src/main.js
   data_dir: ~/zylos/components/multica
   hooks:
     configure: hooks/configure.js

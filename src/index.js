@@ -4,7 +4,6 @@
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { getConfig, stopWatching, watchConfig } from './lib/config.js';
@@ -330,7 +329,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   };
 }
 
-async function main() {
+export async function main() {
   const config = getConfig();
   if (!config.enabled) {
     log('INFO', 'component disabled; exiting');
@@ -353,12 +352,4 @@ async function main() {
   });
   log('INFO', 'bridge starting', { base_url: config.base_url, daemon_id: config.daemon_id });
   await bridge.run();
-}
-
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
-if (invokedPath === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(`[multica] Fatal error: ${error.message}`);
-    process.exit(1);
-  });
 }

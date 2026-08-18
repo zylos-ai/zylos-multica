@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Node test coverage for protocol, routing, sanitization, failure, and hook
   behavior.
 
+### Fixed
+
+- Start the bridge through an unconditional thin process entry so PM2 fork
+  mode cannot bypass `main()` when `process.argv[1]` points at PM2's wrapper.
+
 ### Security
 
 - Keep the Multica PAT out of process arguments and redact it from API errors.

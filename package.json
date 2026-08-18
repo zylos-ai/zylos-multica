@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/main.js",
     "test": "node --test"
   },
   "homepage": "https://github.com/zylos-ai/zylos-multica#readme",

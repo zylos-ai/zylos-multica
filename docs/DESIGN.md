@@ -22,6 +22,13 @@ The bridge calls `start` only after C4 accepts a direct delivery or scheduler
 accepts a durable future handoff. If both scheduler and direct C4 delivery fail,
 the task remains dispatched for Multica's server-side recovery path.
 
+## Process entry
+
+PM2, the component lifecycle manifest, and `npm start` all launch
+`src/main.js`. This thin process entry invokes the exported `main()`
+unconditionally; `src/index.js` owns the bridge implementation and exports its
+test seams without inferring direct execution from `process.argv`.
+
 ## Startup contract probe
 
 Registration is both idempotent setup and the compatibility probe. Startup
