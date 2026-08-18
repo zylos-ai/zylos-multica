@@ -4,6 +4,12 @@
 **分工**（Howard 指定）: Luna 出方案+验收标准 → Jinglever 方案 review → Jinglever 开发 → Luna CR+验收
 **上游沉淀**: [docs/zylos-multica-bridge]（Luna pages: docs/zylos-multica-bridge）（已验证的桥，本组件将其产品化）
 
+> **v0.2.21 follow-on（2026-08-19）**：本文主体保留 v0.1.0 的方案与验收记录。
+> 后续 quick-create + 首批业务 CLI 的现行契约以 GitHub #5 和仓库
+> `AGENTS.md` 为准；它们已取代本文中“quick-create fail+引导”的旧行为，
+> 并要求真实上报 0.2.21、显式 kind 判别、`start → one create → complete`、
+> origin 戳与预上传附件 ID 同体绑定。
+
 ## 1. 背景与问题
 
 zylos-multica-bridge 今天已在 Luna 机器上全链路验证（Web 派活 / 聊天 / due-date 分流 / 三态回报），但它是 ad-hoc 工程：workspace 裸仓库 + 手工 pm2 + 手写 config——**只有 Luna 这一台能用，别的 zylos 实例无法复制安装**。Howard 要求按 zylos-component-template 规范组件化为 `zylos-multica`，让任何 zylos agent 一条 `zylos add` 接入任意 Multica 部署。

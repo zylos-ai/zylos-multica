@@ -12,7 +12,7 @@ if (!taskId || !message) {
   process.exit(2);
 }
 if (/^\[MEDIA:[^\]]+\]/i.test(message)) {
-  console.error('Multica v0.1.0 accepts text replies only. Send a text conclusion instead of [MEDIA:...].');
+  console.error('Multica v0.2.21 accepts text replies only. Send a text conclusion instead of [MEDIA:...].');
   process.exit(2);
 }
 

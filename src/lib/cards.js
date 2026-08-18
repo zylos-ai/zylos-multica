@@ -43,7 +43,7 @@ export function buildChatCard(task) {
     sanitizeExternalText(task.chat_message || '(empty message)'),
   ];
   if (attachments.length) {
-    lines.push('', `(Attachments are not downloadable in v0.1.0: ${attachments.join(', ')})`);
+    lines.push('', `(Chat attachments are not downloadable in v0.2.21: ${attachments.join(', ')})`);
   }
   lines.push(
     '',

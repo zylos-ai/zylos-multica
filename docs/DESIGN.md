@@ -15,7 +15,7 @@ Multica daemon API
                          |
                          +-- issue/chat -> C4 -> normal reply -> send.js -> complete
                          +-- future due -> scheduler -> C4 -> normal reply -> complete
-                         +-- quick-create -> fail with guidance
+                         +-- quick-create -> start -> one issue create -> complete
 ```
 
 The bridge calls `start` only after C4 accepts a direct delivery or scheduler
@@ -29,12 +29,26 @@ PM2, the component lifecycle manifest, and `npm start` all launch
 unconditionally; `src/index.js` owns the bridge implementation and exports its
 test seams without inferring direct execution from `process.argv`.
 
+## Quick-create and business API
+
+Only an explicit daemon `kind=quick_create` enters the translator. Validation
+derives a Unicode-safe title from the first non-empty prompt line, preserves the
+description byte-for-byte as a JavaScript string, validates pre-uploaded
+attachment IDs, and stamps `origin_type=quick_create` plus the daemon task ID.
+The single non-idempotent issue create is shared with the business CLI; only
+terminal callbacks may be retried.
+
+`scripts/multica.js` exposes six business leaves aligned with the upstream Go
+CLI: issue create/get/list, issue comment add/list, and chat history. It uses the
+component's local config and the shared HTTP layer; file-backed text inputs are
+confined to the working directory unless explicitly overridden.
+
 ## Startup contract probe
 
 Registration is both idempotent setup and the compatibility probe. Startup
-requires the response to expose `runtimes` and `repos` arrays plus a `settings`
-object, and to include the registered `zylos` runtime ID. A server version, when
-present, is diagnostic only.
+requires the response to expose `runtimes` and include the registered `zylos`
+runtime ID. Optional `repos` / `settings` fields are not consumed and may be
+absent or null. A server version, when present, is diagnostic only.
 
 ## Trust boundaries
 

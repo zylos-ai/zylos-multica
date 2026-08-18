@@ -58,7 +58,7 @@ export function normalizeConfig(input) {
     ...runtime,
     type: 'zylos',
     name: requireString(runtime.name ?? config.runtime_name, 'runtime.name'),
-    version: '0.1.0',
+    version: '0.2.21',
   };
   delete config.runtime_name;
   return config;

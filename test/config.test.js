@@ -14,7 +14,7 @@ const base = {
 test('normalization clamps provider type and protocol version', () => {
   const config = normalizeConfig(base);
   assert.equal(config.runtime.type, 'zylos');
-  assert.equal(config.runtime.version, '0.1.0');
+  assert.equal(config.runtime.version, '0.2.21');
   assert.equal(config.poll_interval_s, 15);
 });
 

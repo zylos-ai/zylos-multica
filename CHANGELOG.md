@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Translate explicit quick-create tasks through `start → one issue create →
+  complete`, preserving the raw prompt, Unicode-safe title truncation, origin
+  stamps, and pre-uploaded attachment IDs.
+- Add the first official-shape business CLI slice: issue create/get/list,
+  issue comment add/list, and current-conversation chat history.
+
+### Changed
+
+- Report the real component and runtime capability version as 0.2.21 so the
+  server enables the implemented quick-create contract without claiming the
+  later 0.4.3 priority/due capability tier.
+
+### Security
+
+- Validate quick-create inputs before issue creation and never replay an
+  ambiguous non-idempotent create failure.
+- Constrain CLI file-backed text inputs to the current working directory by
+  default, including symlink resolution.
+
 ## [0.1.0] - 2026-08-19
 
 ### Added

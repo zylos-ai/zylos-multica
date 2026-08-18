@@ -13,7 +13,7 @@ const config = {
   workspace_id: 'workspace-1',
   daemon_id: 'daemon-1',
   poll_interval_s: 15,
-  runtime: { type: 'zylos', name: 'Jinglever (zylos)', version: '0.1.0' },
+  runtime: { type: 'zylos', name: 'Jinglever (zylos)', version: '0.2.21' },
 };
 
 test('register probe validates only the consumed runtime contract', () => {
@@ -32,14 +32,20 @@ test('register probe validates only the consumed runtime contract', () => {
 });
 
 test('register accepts null optional settings without masking the runtime', async () => {
+  let registerBody;
   const bridge = createBridge(config, {
-    request: async () => ({
-      runtimes: [{ id: 'runtime-1', provider: 'zylos' }],
-      repos: [],
-      settings: null,
-    }),
+    request: async (_config, _method, _path, body) => {
+      registerBody = body;
+      return {
+        runtimes: [{ id: 'runtime-1', provider: 'zylos' }],
+        repos: [],
+        settings: null,
+      };
+    },
   });
   await bridge.register();
+  assert.equal(registerBody.cli_version, 'zylos-multica/0.2.21');
+  assert.equal(registerBody.runtimes[0].version, '0.2.21');
 });
 
 test('issue delivery uses a real C4 reply route and starts only after delivery', async () => {
@@ -445,7 +451,7 @@ test('scheduler reconciliation fails loudly on an incompatible JSON contract', a
   );
 });
 
-test('quick-create meta-task is failed with guidance and never delivered', async () => {
+test('a non-quick task without issue_id is failed and never creates an issue', async () => {
   const calls = [];
   const bridge = createBridge(config, {
     request: async (_config, method, apiPath, body) => {
@@ -454,7 +460,81 @@ test('quick-create meta-task is failed with guidance and never delivered', async
     },
     runScript: async () => { throw new Error('must not deliver'); },
   });
-  assert.equal(await bridge.handleTask({ id: 'meta-1' }), true);
+  assert.equal(await bridge.handleTask({ id: 'meta-1', kind: 'autopilot' }), true);
   assert.equal(calls[0].apiPath, '/api/daemon/tasks/meta-1/fail');
-  assert.match(calls[0].body.error, /quick-create/);
+  assert.match(calls[0].body.error, /autopilot/);
+  assert.ok(!calls.some((call) => call.apiPath === '/api/issues'));
+});
+
+test('quick-create starts, creates exactly once with origin and attachments, then completes', async () => {
+  const calls = [];
+  const prompt = `\r\n  ${'😀'.repeat(205)}  \r\nBody keeps  spaces and CRLF\r\n`;
+  const bridge = createBridge(config, {
+    request: async (_config, method, apiPath, body, options) => {
+      calls.push({ method, apiPath, body, options });
+      if (apiPath === '/api/issues') return { id: 'issue-9', identifier: 'MUL-9' };
+      return {};
+    },
+  });
+  assert.equal(await bridge.handleTask({
+    id: 'quick-1',
+    kind: 'quick_create',
+    quick_create_prompt: prompt,
+    quick_create_attachment_ids: ['att-1', 'att-2'],
+  }), true);
+  assert.deepEqual(calls.map((call) => call.apiPath), [
+    '/api/daemon/tasks/quick-1/start',
+    '/api/issues',
+    '/api/daemon/tasks/quick-1/complete',
+  ]);
+  assert.equal(Array.from(calls[1].body.title).length, 200);
+  assert.equal(Array.from(calls[1].body.title).at(-1), '…');
+  assert.deepEqual(calls[1].body, {
+    title: `${'😀'.repeat(199)}…`,
+    description: prompt,
+    origin_type: 'quick_create',
+    origin_id: 'quick-1',
+    attachment_ids: ['att-1', 'att-2'],
+  });
+  assert.deepEqual(calls[1].options, { workspaceHeader: true });
+  assert.deepEqual(calls[2].body, { output: 'Created MUL-9' });
+});
+
+test('invalid quick-create prompt and attachment ids fail before start or issue creation', async () => {
+  for (const task of [
+    { id: 'quick-empty', kind: 'quick_create', quick_create_prompt: ' \r\n ' },
+    { id: 'quick-bad-att', kind: 'quick_create', quick_create_prompt: 'Valid', quick_create_attachment_ids: [''] },
+  ]) {
+    const calls = [];
+    const bridge = createBridge(config, {
+      request: async (_config, method, apiPath, body) => {
+        calls.push({ method, apiPath, body });
+        return {};
+      },
+    });
+    assert.equal(await bridge.handleTask(task), true);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].apiPath, /\/fail$/);
+    assert.ok(!calls.some((call) => call.apiPath.endsWith('/start') || call.apiPath === '/api/issues'));
+  }
+});
+
+test('quick-create never replays issue creation and retries only the failure callback', async () => {
+  const calls = [];
+  let failAttempts = 0;
+  const bridge = createBridge(config, {
+    request: async (_config, method, apiPath, body) => {
+      calls.push({ method, apiPath, body });
+      if (apiPath === '/api/issues') throw new Error('ambiguous timeout');
+      if (apiPath.endsWith('/fail') && failAttempts++ === 0) throw new Error('callback timeout');
+      return {};
+    },
+  });
+  assert.equal(await bridge.handleTask({
+    id: 'quick-fail', kind: 'quick_create', quick_create_prompt: 'Do it',
+  }), true);
+  assert.equal(calls.filter((call) => call.apiPath === '/api/issues').length, 1);
+  assert.equal(calls.filter((call) => call.apiPath.endsWith('/start')).length, 1);
+  assert.equal(calls.filter((call) => call.apiPath.endsWith('/fail')).length, 2);
+  assert.equal(calls.filter((call) => call.apiPath.endsWith('/complete')).length, 0);
 });
