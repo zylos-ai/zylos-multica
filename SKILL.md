@@ -1,6 +1,6 @@
 ---
 name: multica
-version: 0.1.0
+version: 0.2.21
 description: >
   Multica task-platform communication channel for Zylos agents. Use when a
   Multica deployment dispatches issue or chat work into the live agent session,
@@ -65,4 +65,31 @@ node ~/zylos/.claude/skills/multica/scripts/report.js progress <task-id> "<statu
 node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id> "<reason>"
 ```
 
-Media replies are not supported in v0.1.0; send text instead.
+Media replies are not supported in v0.2.21; send text instead.
+
+Quick-create tasks are translated directly into one issue after task validation:
+the bridge starts the task, creates exactly one issue with origin and pre-uploaded
+attachment IDs, then completes the task. It never retries the non-idempotent
+issue create request.
+
+The first business CLI slice mirrors the official command grouping while using
+this component's protected local config (the PAT never appears in argv):
+
+```bash
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue create --title "Title" --description "Body"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
+node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
+```
+
+`chat history` works only while the referenced chat task is active. The bridge
+stores its task-scoped token in a private mode-0600 file and removes it after a
+successful `complete` or `fail`; the component PAT is never used for chat
+history.
+
+`issue comment add` writes as the component PAT owner's member actor. On an
+issue assigned to this same agent, that comment can dispatch another comment
+task back to the agent. Do not call it from an automatic same-issue handling
+loop unless the workflow has an explicit trigger/loop guard.

@@ -6,8 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
+import { createIssue } from './lib/business-cli.js';
 import { getConfig, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
+import { storeTaskToken } from './lib/task-tokens.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -94,17 +96,18 @@ export function createBridge(initialConfig, dependencies = {}) {
   const request = dependencies.request ?? multicaRequest;
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
+  const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
 
   async function register() {
     const response = await request(config, 'POST', '/api/daemon/register', {
       daemon_id: config.daemon_id,
       workspace_id: config.workspace_id,
       device_name: config.device_name || os.hostname(),
-      cli_version: 'zylos-multica/0.1.0',
+      cli_version: 'zylos-multica/0.2.21',
       runtimes: [{
         type: 'zylos',
         name: config.runtime.name,
-        version: '0.1.0',
+        version: '0.2.21',
         status: 'online',
       }],
     });
@@ -213,8 +216,81 @@ export function createBridge(initialConfig, dependencies = {}) {
     await request(config, 'POST', `/api/daemon/tasks/${encodeURIComponent(task.id)}/start`, {});
   }
 
+  async function reportTerminal(task, action, body) {
+    const endpoint = `/api/daemon/tasks/${encodeURIComponent(task.id)}/${action}`;
+    try {
+      return await request(config, 'POST', endpoint, body);
+    } catch (firstError) {
+      log('WARN', `${action} callback failed; retrying callback only`, {
+        task_id: task.id,
+        error: String(firstError?.message || firstError).slice(0, 200),
+      });
+      return request(config, 'POST', endpoint, body);
+    }
+  }
+
+  function quickCreateBody(task) {
+    if (typeof task.id !== 'string' || task.id.trim() === '') {
+      throw new Error('task id must be a non-empty string');
+    }
+    if (typeof task.quick_create_prompt !== 'string' || task.quick_create_prompt.trim() === '') {
+      throw new Error('quick_create_prompt must be a non-empty string');
+    }
+    const attachmentIds = task.quick_create_attachment_ids;
+    if (attachmentIds !== undefined && (!Array.isArray(attachmentIds)
+      || attachmentIds.some((id) => typeof id !== 'string' || id.trim() === ''))) {
+      throw new Error('quick_create_attachment_ids must be an array of non-empty strings');
+    }
+    const firstLine = task.quick_create_prompt.split(/\r\n|\n|\r/u).find((line) => line.trim() !== '').trim();
+    const titleCodePoints = Array.from(firstLine);
+    const body = {
+      title: titleCodePoints.length > 200 ? `${titleCodePoints.slice(0, 199).join('')}…` : firstLine,
+      description: task.quick_create_prompt,
+      origin_type: 'quick_create',
+      origin_id: String(task.id),
+    };
+    if (attachmentIds?.length) body.attachment_ids = attachmentIds.map((id) => id.trim());
+    return body;
+  }
+
+  async function handleQuickCreate(task) {
+    let body;
+    try {
+      body = quickCreateBody(task);
+    } catch (error) {
+      await reportTerminal(task, 'fail', { error: `invalid quick-create task: ${error.message}` });
+      log('WARN', 'invalid quick-create task failed before issue creation', { task_id: task.id });
+      return true;
+    }
+
+    await startTask(task);
+    let issue;
+    try {
+      issue = await createIssue(config, body, request);
+    } catch (error) {
+      await reportTerminal(task, 'fail', { error: `quick-create issue creation failed: ${error.message}` });
+      log('WARN', 'quick-create issue creation failed without replay', { task_id: task.id });
+      return true;
+    }
+    const issueRef = issue?.identifier || issue?.id || 'created issue';
+    await reportTerminal(task, 'complete', { output: `Created ${issueRef}` });
+    log('INFO', 'quick-create task completed', { task_id: task.id, issue_id: issue?.id });
+    return true;
+  }
+
   async function handleTask(task) {
+    if (task.kind === 'quick_create') return handleQuickCreate(task);
+
     if (task.chat_session_id) {
+      try {
+        persistTaskToken(task.id, task.auth_token);
+      } catch (error) {
+        log('ERROR', 'chat task token could not be persisted; leaving task dispatched', {
+          task_id: task.id,
+          error: String(error?.message || error).slice(0, 200),
+        });
+        return false;
+      }
       if (!await deliverToC4(buildChatCard(task), task.id)) {
         log('WARN', 'chat delivery failed; leaving task dispatched', { task_id: task.id });
         return false;
@@ -226,9 +302,9 @@ export function createBridge(initialConfig, dependencies = {}) {
 
     if (!task.issue_id) {
       await request(config, 'POST', `/api/daemon/tasks/${encodeURIComponent(task.id)}/fail`, {
-        error: 'The zylos runtime does not handle quick-create meta-tasks. Create an issue and assign it to the Zylos agent instead.',
+        error: `The zylos runtime cannot route task kind ${String(task.kind || 'unknown')} without an issue_id.`,
       });
-      log('INFO', 'quick-create meta-task rejected with guidance', { task_id: task.id });
+      log('INFO', 'unsupported task without issue_id rejected', { task_id: task.id, kind: task.kind });
       return true;
     }
 
@@ -318,6 +394,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   return {
     deliverToC4,
     handleTask,
+    handleQuickCreate,
     listScheduledTasks,
     reconcileScheduledTasks,
     register,

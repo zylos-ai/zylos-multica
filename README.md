@@ -19,6 +19,10 @@
 - Supports future due-date handoff through the Zylos scheduler.
 - Reconciles failed future handoffs back to Multica for eligible redispatch.
 - Reports completion, progress, and failure directly to the Multica daemon API.
+- Converts validated quick-create tasks into exactly one origin-stamped issue,
+  including pre-uploaded attachment IDs.
+- Provides an official-shape business CLI slice for issue create/get/list,
+  issue comment add/list, and current-conversation chat history.
 - Stores the PAT only in a mode-0600 component config file.
 
 ## Due-date reconciliation
@@ -83,7 +87,40 @@ node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id> "Blocked by
 ```
 
 `scripts/send.js` intentionally rejects `[MEDIA:...]` replies because Multica
-v0.1.0 completion output is text-only.
+v0.2.21 completion output is text-only.
+
+### Quick-create and business commands
+
+Quick-create is recognized only from `task.kind === "quick_create"`. The prompt
+and attachment-ID array are validated before issue creation, then the bridge
+runs `start → one create → complete`. An ambiguous create failure is reported
+to the task and never replayed, avoiding duplicate issues.
+
+The business CLI reads the same mode-0600 component config, so the PAT does not
+appear in process arguments:
+
+```bash
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue create --title "Title" --description "Body"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
+node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
+```
+
+`chat history` requires the task id from the active chat card. The bridge keeps
+that task's scoped token in a private mode-0600 file and deletes it after a
+successful complete/fail callback; the component PAT cannot access this API.
+
+Comments added with the component PAT are attributed to its member actor. If
+the issue is assigned to the same agent, `issue comment add` can dispatch a new
+comment task back to that agent. Avoid calling it from an automatic same-issue
+handler unless an explicit trigger/loop guard prevents self-retriggering.
+
+Inline description/content values decode `\\n`, `\\r`, `\\t`, and `\\\\` like
+the official CLI. The `--description-file` / `--content-file` forms preserve
+text and reject paths outside the current working directory (including symlink
+escapes) unless `--allow-external-file` is explicitly passed.
 
 ## Migration from the reference bridge
 
@@ -94,10 +131,10 @@ the live issue and chat checks pass.
 
 ## Operations
 
-The service fails fast if the register response does not expose the expected
-`runtimes`, `repos`, and `settings` contract. Key delivery log messages are
-stable monitoring interfaces. PAT values are never included in command
-arguments or normal logs.
+The service fails fast if the register response does not expose the registered
+`zylos` runtime ID. Optional `repos` / `settings` fields may be absent or null.
+Key delivery log messages are stable monitoring interfaces. PAT values are
+never included in command arguments or normal logs.
 
 This component has no browser-facing HTTP surface, so HTTP indexing controls do
 not apply.
