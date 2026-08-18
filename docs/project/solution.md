@@ -46,7 +46,7 @@ multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spaw
 ## 5. 总体架构
 
 ```
-Multica 服务端 ←(daemon 协议: register/heartbeat/claim/start/回报)→ src/index.js (pm2 常驻)
+Multica 服务端 ←(daemon 协议: register/heartbeat/claim/start/回报)→ src/main.js (pm2 入口) → src/index.js
                                                                         │ 分类投递
                     issue 任务 ──→ C4 任务卡 ─┐
                     聊天任务 ───→ C4 聊天卡 ─┼→ dispatcher → agent 活会话
@@ -61,7 +61,7 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 **模块划分**（C4 container 级）:
 | 模块 | 职责 | 实现载体 |
 |---|---|---|
-| bridge 主循环 | register/heartbeat/claim/分类/投递/start/退避 | `src/index.js`（今天验证的 bridge.js 逻辑迁移） |
+| 服务入口 + bridge 主循环 | `src/main.js` 无条件启动；`src/index.js` 承载 register/heartbeat/claim/分类/投递/start/退避与测试 exports | `src/main.js` + `src/index.js` |
 | 回报通道 | send.js(complete)/report.js(progress,fail)，直连 API 不经主循环 | `scripts/` |
 | 组件包装 | SKILL.md/hooks(configure,post-install,pre/post-upgrade)/config 模板/pm2 | `hooks/` + 元文件 |
 

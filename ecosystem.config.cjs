@@ -4,7 +4,7 @@ const os = require('os');
 module.exports = {
   apps: [{
     name: 'zylos-multica',
-    script: 'src/index.js',
+    script: 'src/main.js',
     cwd: path.join(os.homedir(), 'zylos/.claude/skills/multica'),
     env: {
       NODE_ENV: 'production'
