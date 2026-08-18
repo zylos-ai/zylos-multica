@@ -15,6 +15,7 @@ const config = {
 
 function harness(response = {}) {
   const calls = [];
+  const authTokens = [];
   let output = '';
   const stdout = new PassThrough();
   stdout.setEncoding('utf8');
@@ -24,11 +25,13 @@ function harness(response = {}) {
     output: () => output,
     dependencies: {
       stdout,
-      request: async (_config, method, apiPath, body, options) => {
+      request: async (requestConfig, method, apiPath, body, options) => {
+        authTokens.push(requestConfig.pat);
         calls.push({ method, apiPath, body, options });
         return typeof response === 'function' ? response({ method, apiPath, body, options }) : response;
       },
     },
+    authTokens,
   };
 }
 
@@ -117,10 +120,22 @@ test('issue comment add/list implement text decoding and bounded thread paging',
   );
 });
 
-test('chat history forwards only the current-session paging contract', async () => {
+test('chat history requires a task and uses only its scoped token', async () => {
   const h = harness({ messages: [] });
-  await runBusinessCLI(config, ['chat', 'history', '--limit', '20', '--before', 'opaque'], h.dependencies);
+  h.dependencies.loadTaskToken = (taskId) => {
+    assert.equal(taskId, 'chat-task-1');
+    return 'mat_task_scoped';
+  };
+  await runBusinessCLI(config, [
+    'chat', 'history', '--task', 'chat-task-1', '--limit', '20', '--before', 'opaque',
+  ], h.dependencies);
   assert.equal(h.calls.length, 1);
   assert.equal(h.calls[0].apiPath, '/api/chat/history?limit=20&before=opaque');
   assert.deepEqual(h.calls[0].options, { workspaceHeader: true });
+  assert.deepEqual(h.authTokens, ['mat_task_scoped']);
+  assert.notEqual(h.authTokens[0], config.pat);
+  await assert.rejects(
+    runBusinessCLI(config, ['chat', 'history'], h.dependencies),
+    /--task is required/,
+  );
 });

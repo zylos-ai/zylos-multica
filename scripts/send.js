@@ -3,6 +3,7 @@
 
 import { getConfig } from '../src/lib/config.js';
 import { reportTask } from '../src/lib/multica-api.js';
+import { removeTaskToken } from '../src/lib/task-tokens.js';
 
 const [taskId, ...parts] = process.argv.slice(2);
 const message = parts.join(' ').trim();
@@ -18,6 +19,11 @@ if (/^\[MEDIA:[^\]]+\]/i.test(message)) {
 
 try {
   await reportTask(getConfig(), 'complete', taskId, message);
+  try {
+    removeTaskToken(taskId);
+  } catch (error) {
+    console.error(`WARNING: task ${taskId} completed but its local chat token could not be removed: ${error.message}`);
+  }
   console.log(`OK: task ${taskId} completed`);
 } catch (error) {
   console.error(`FAILED: ${error.message}`);

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { multicaRequest } from './multica-api.js';
+import { loadTaskToken } from './task-tokens.js';
 
 const ISSUE_SORTS = new Set(['position', 'title', 'created_at', 'start_date', 'due_date', 'priority']);
 const DIRECTIONAL_SORTS = new Set(['title', 'created_at', 'start_date', 'due_date', 'priority']);
@@ -252,15 +253,23 @@ async function commentAdd(config, issueRef, flags, request, io) {
   return { result, output: assertOutput(one(flags, 'output')) };
 }
 
-async function chatHistory(config, flags, request) {
-  rejectUnknown(flags, new Set(['limit', 'before', 'output']));
+async function chatHistory(config, flags, request, readTaskToken) {
+  rejectUnknown(flags, new Set(['task', 'limit', 'before', 'output']));
+  const taskId = requireText(one(flags, 'task'), '--task').trim();
+  const taskToken = readTaskToken(taskId);
   const params = new URLSearchParams();
   const limit = one(flags, 'limit');
   if (limit !== undefined) params.set('limit', String(parseInteger(limit, '--limit', { min: 1 })));
   const before = one(flags, 'before');
   if (before !== undefined) params.set('before', requireText(before, '--before'));
   const query = params.size ? `?${params}` : '';
-  const result = await request(config, 'GET', `/api/chat/history${query}`, undefined, { workspaceHeader: true });
+  const result = await request(
+    { ...config, pat: taskToken },
+    'GET',
+    `/api/chat/history${query}`,
+    undefined,
+    { workspaceHeader: true },
+  );
   return { result, output: assertOutput(one(flags, 'output')) };
 }
 
@@ -274,6 +283,7 @@ function printTable(value, stdout) {
 
 export async function runBusinessCLI(config, argv, dependencies = {}) {
   const request = dependencies.request ?? multicaRequest;
+  const readTaskToken = dependencies.loadTaskToken ?? loadTaskToken;
   const io = {
     stdin: dependencies.stdin ?? process.stdin,
     stdout: dependencies.stdout ?? process.stdout,
@@ -291,7 +301,7 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   } else if (group === 'issue' && command === 'comment' && subcommand === 'list') {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);
-  } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request);
+  } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);
   else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ...');
 
   if (response.output === 'table') printTable(response.result, io.stdout);

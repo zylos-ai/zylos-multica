@@ -81,5 +81,15 @@ node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update"
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
-node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --limit 20
+node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
 ```
+
+`chat history` works only while the referenced chat task is active. The bridge
+stores its task-scoped token in a private mode-0600 file and removes it after a
+successful `complete` or `fail`; the component PAT is never used for chat
+history.
+
+`issue comment add` writes as the component PAT owner's member actor. On an
+issue assigned to this same agent, that comment can dispatch another comment
+task back to the agent. Do not call it from an automatic same-issue handling
+loop unless the workflow has an explicit trigger/loop guard.

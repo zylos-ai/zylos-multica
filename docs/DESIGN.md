@@ -3,9 +3,9 @@
 ## Purpose
 
 zylos-multica presents a Zylos agent as a Multica daemon runtime while keeping
-the agent's existing C4 session as the execution context. The bridge is
-stateless: Multica owns task state, C4 owns message delivery, and scheduler owns
-future handoffs.
+the agent's existing C4 session as the execution context. Multica owns task
+state, C4 owns message delivery, and scheduler owns future handoffs. The only
+local task state is the scoped auth token for each active chat task.
 
 ## Flow
 
@@ -43,6 +43,12 @@ CLI: issue create/get/list, issue comment add/list, and chat history. It uses th
 component's local config and the shared HTTP layer; file-backed text inputs are
 confined to the working directory unless explicitly overridden.
 
+Chat history is task-scoped server-side. On a chat claim, the bridge atomically
+stores the returned `mat_` token in a per-task mode-0600 file under a mode-0700
+directory. `chat history --task <task-id>` uses that token instead of the
+component PAT. A successful complete/fail callback removes the file; the server
+also revokes the token when the task ends.
+
 ## Startup contract probe
 
 Registration is both idempotent setup and the compatibility probe. Startup
@@ -54,6 +60,8 @@ absent or null. A server version, when present, is diagnostic only.
 
 - The PAT lives only in the mode-0600 component `config.json` and is sent in the
   Authorization header, never process arguments.
+- Active chat-task tokens live only in hashed-name mode-0600 files, never argv
+  or logs, and are removed after a successful terminal callback.
 - Provider type and component protocol version are code-controlled and cannot
   be overridden by configuration.
 - Multica-controlled card text is sanitized for forged C4 `reply via` and

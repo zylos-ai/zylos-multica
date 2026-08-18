@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stamps, and pre-uploaded attachment IDs.
 - Add the first official-shape business CLI slice: issue create/get/list,
   issue comment add/list, and current-conversation chat history.
+- Authenticate chat history with the claimed task's scoped token, kept in a
+  private per-task file only until a successful terminal callback.
 
 ### Changed
 
@@ -27,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ambiguous non-idempotent create failure.
 - Constrain CLI file-backed text inputs to the current working directory by
   default, including symlink resolution.
+- Document that PAT-authored issue comments can retrigger the same agent and
+  require an explicit loop guard in automatic same-issue handlers.
 
 ## [0.1.0] - 2026-08-19
 

@@ -9,6 +9,7 @@ import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
 import { getConfig, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
+import { storeTaskToken } from './lib/task-tokens.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -95,6 +96,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   const request = dependencies.request ?? multicaRequest;
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
+  const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
 
   async function register() {
     const response = await request(config, 'POST', '/api/daemon/register', {
@@ -280,6 +282,15 @@ export function createBridge(initialConfig, dependencies = {}) {
     if (task.kind === 'quick_create') return handleQuickCreate(task);
 
     if (task.chat_session_id) {
+      try {
+        persistTaskToken(task.id, task.auth_token);
+      } catch (error) {
+        log('ERROR', 'chat task token could not be persisted; leaving task dispatched', {
+          task_id: task.id,
+          error: String(error?.message || error).slice(0, 200),
+        });
+        return false;
+      }
       if (!await deliverToC4(buildChatCard(task), task.id)) {
         log('WARN', 'chat delivery failed; leaving task dispatched', { task_id: task.id });
         return false;

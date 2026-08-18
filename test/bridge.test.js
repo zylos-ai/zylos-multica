@@ -89,6 +89,46 @@ test('delivery failure leaves the Multica task dispatched', async () => {
   assert.ok(!calls.some((call) => call.apiPath.endsWith('/start')));
 });
 
+test('chat task persists its scoped token before delivery and start', async () => {
+  const events = [];
+  const bridge = createBridge(config, {
+    storeTaskToken: (taskId, authToken) => events.push(['token', taskId, authToken]),
+    runScript: async () => {
+      events.push(['deliver']);
+      return { ok: true, stdout: '', stderr: '' };
+    },
+    request: async (_config, _method, apiPath) => {
+      if (apiPath.endsWith('/start')) events.push(['start']);
+      return {};
+    },
+  });
+  assert.equal(await bridge.handleTask({
+    id: 'chat-1',
+    chat_session_id: 'session-1',
+    auth_token: 'mat_task_scoped',
+  }), true);
+  assert.deepEqual(events, [
+    ['token', 'chat-1', 'mat_task_scoped'],
+    ['deliver'],
+    ['start'],
+  ]);
+});
+
+test('chat task without a persistable scoped token is neither delivered nor started', async () => {
+  let requests = 0;
+  let deliveries = 0;
+  const bridge = createBridge(config, {
+    storeTaskToken: (_taskId, authToken) => {
+      if (!authToken) throw new Error('task auth token must be a non-empty string');
+    },
+    runScript: async () => { deliveries++; return { ok: true, stdout: '', stderr: '' }; },
+    request: async () => { requests++; return {}; },
+  });
+  assert.equal(await bridge.handleTask({ id: 'chat-no-token', chat_session_id: 'session-1' }), false);
+  assert.equal(deliveries, 0);
+  assert.equal(requests, 0);
+});
+
 test('future due date schedules with the full task id before start and falls back to C4', async () => {
   const starts = [];
   const scripts = [];

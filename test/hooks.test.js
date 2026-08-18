@@ -7,6 +7,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { loadTaskToken, storeTaskToken } from '../src/lib/task-tokens.js';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function run(script, args, options = {}) {
@@ -117,19 +119,62 @@ test('send.js completes text and rejects media without a request', async () => {
     runtime: { name: 'Agent (zylos)' },
   }), { mode: 0o600 });
   const env = { ...process.env, HOME: home };
+  const tokenDir = path.join(dataDir, 'task-tokens');
+  storeTaskToken('task-1', 'mat_task-1', tokenDir);
+  storeTaskToken('task-2', 'mat_task-2', tokenDir);
+  storeTaskToken('task-3', 'mat_task-3', tokenDir);
   const textResult = await runAsync('scripts/send.js', ['task-1', 'done'], { env });
   assert.equal(textResult.status, 0, textResult.stderr);
-  const progressResult = await runAsync('scripts/report.js', ['progress', 'task-1', 'halfway'], { env });
+  const progressResult = await runAsync('scripts/report.js', ['progress', 'task-3', 'halfway'], { env });
   assert.equal(progressResult.status, 0, progressResult.stderr);
   const failResult = await runAsync('scripts/report.js', ['fail', 'task-2', 'blocked'], { env });
   assert.equal(failResult.status, 0, failResult.stderr);
   const mediaResult = run('scripts/send.js', ['task-1', '[MEDIA:image]/tmp/a.png'], { env });
   assert.equal(mediaResult.status, 2);
+  assert.throws(() => loadTaskToken('task-1', tokenDir), /no active chat token/);
+  assert.throws(() => loadTaskToken('task-2', tokenDir), /no active chat token/);
+  assert.equal(loadTaskToken('task-3', tokenDir), 'mat_task-3');
+  assert.equal(fs.statSync(tokenDir).mode & 0o777, 0o700);
+  const [remainingTokenFile] = fs.readdirSync(tokenDir);
+  assert.equal(fs.statSync(path.join(tokenDir, remainingTokenFile)).mode & 0o777, 0o600);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(requests, [
     { url: '/api/daemon/tasks/task-1/complete', body: { output: 'done' } },
-    { url: '/api/daemon/tasks/task-1/progress', body: { summary: 'halfway' } },
+    { url: '/api/daemon/tasks/task-3/progress', body: { summary: 'halfway' } },
     { url: '/api/daemon/tasks/task-2/fail', body: { error: 'blocked' } },
   ]);
   server.close();
+});
+
+test('chat history crosses the HTTP auth boundary with the claimed task token', async () => {
+  const authorizations = [];
+  const server = http.createServer((request, response) => {
+    authorizations.push(request.headers.authorization);
+    if (request.url !== '/api/chat/history?limit=20' || request.headers.authorization !== 'Bearer mat_chat-1') {
+      response.writeHead(403, { 'Content-Type': 'application/json' });
+      response.end('{"error":"chat history is only available from within an agent task"}');
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end('{"messages":[]}');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-chat-history-'));
+  const dataDir = path.join(home, 'zylos/components/multica');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    pat: 'mul-component-pat',
+    workspace_id: 'workspace-1',
+    daemon_id: 'daemon-1',
+    runtime: { name: 'Agent (zylos)' },
+  }), { mode: 0o600 });
+  storeTaskToken('chat-1', 'mat_chat-1', path.join(dataDir, 'task-tokens'));
+  const result = await runAsync('scripts/multica.js', [
+    'chat', 'history', '--task', 'chat-1', '--limit', '20',
+  ], { env: { ...process.env, HOME: home } });
+  server.close();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(authorizations, ['Bearer mat_chat-1']);
+  assert.doesNotMatch(result.stdout + result.stderr, /mat_chat-1|mul-component-pat/);
 });

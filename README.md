@@ -105,8 +105,17 @@ node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update"
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
-node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --limit 20
+node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
 ```
+
+`chat history` requires the task id from the active chat card. The bridge keeps
+that task's scoped token in a private mode-0600 file and deletes it after a
+successful complete/fail callback; the component PAT cannot access this API.
+
+Comments added with the component PAT are attributed to its member actor. If
+the issue is assigned to the same agent, `issue comment add` can dispatch a new
+comment task back to that agent. Avoid calling it from an automatic same-issue
+handler unless an explicit trigger/loop guard prevents self-retriggering.
 
 Inline description/content values decode `\\n`, `\\r`, `\\t`, and `\\\\` like
 the official CLI. The `--description-file` / `--content-file` forms preserve
