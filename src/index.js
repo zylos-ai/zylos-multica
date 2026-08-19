@@ -10,6 +10,7 @@ import { createIssue } from './lib/business-cli.js';
 import { getConfig, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
 import { storeTaskToken } from './lib/task-tokens.js';
+import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -103,11 +104,11 @@ export function createBridge(initialConfig, dependencies = {}) {
       daemon_id: config.daemon_id,
       workspace_id: config.workspace_id,
       device_name: config.device_name || os.hostname(),
-      cli_version: 'zylos-multica/0.2.21',
+      cli_version: `zylos-multica/${UPSTREAM_VERSION}`,
       runtimes: [{
         type: 'zylos',
         name: config.runtime.name,
-        version: '0.2.21',
+        version: UPSTREAM_VERSION,
         status: 'online',
       }],
     });

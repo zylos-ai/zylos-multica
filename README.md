@@ -76,6 +76,19 @@ configured with automatic restarts will otherwise retry it until `max_restarts`.
 
 The provider type is fixed to `zylos` and cannot be overridden by config.
 
+### Version tracks
+
+The component release version and the upstream compatibility version are
+independent. `package.json` / `SKILL.md` describe the zylos-multica release,
+while `src/lib/upstream-version.js` records the latest official Multica CLI
+capability level whose business semantics this bridge implements. Daemon
+registration uses that `UPSTREAM_VERSION` for both `cli_version` and runtime
+version; it never derives the capability gate from the package version.
+
+The current upstream compatibility level is 0.2.21. Update it only when the
+bridge is aligned with a newer official business-command contract and the
+matching server behavior and regression tests have been verified.
+
 ## Usage
 
 Incoming Multica cards include a standard C4 reply route. A normal reply

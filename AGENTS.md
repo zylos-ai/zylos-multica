@@ -27,8 +27,8 @@
 
 ## 4. 版本上报政策
 
-- **诚实上报，永不虚报能力**。`cli_version` 报 `zylos-multica/<真实组件版本>`；能力档位仅在**真正实现对应语义后**才上报可过闸的协议能力版本。
-- 当前档位基准：quick-create 基本档 = 0.2.21（附件/双建语义）；priority/due 透传档 = 0.4.3 —— 未实现透传前不得报 0.4.3 及以上。
+- **组件版本与官方能力对照版本双轨独立**。`package.json` / `SKILL.md` 表示 zylos-multica 自身发布版本；`src/lib/upstream-version.js` 的 `UPSTREAM_VERSION` 表示已实现到官方 Multica CLI 的哪一档业务语义。daemon `cli_version` 与 runtime version 一律使用后者，不得从 package 版本推导。
+- 当前官方对照版本 = 0.2.21（quick-create 附件/双建语义）；priority/due 透传档 = 0.4.3。只有完成对应官方业务语义的实现、服务端核对与回归验证后才更新 `UPSTREAM_VERSION`，未实现前不得上报更高档位。
 
 ## 5. 升级同步锚点
 

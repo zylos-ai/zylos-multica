@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { UPSTREAM_VERSION } from './upstream-version.js';
+
 export const DATA_DIR = path.join(os.homedir(), 'zylos/components/multica');
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
@@ -58,7 +60,7 @@ export function normalizeConfig(input) {
     ...runtime,
     type: 'zylos',
     name: requireString(runtime.name ?? config.runtime_name, 'runtime.name'),
-    version: '0.2.21',
+    version: UPSTREAM_VERSION,
   };
   delete config.runtime_name;
   return config;
