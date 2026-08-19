@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { normalizeConfig } from '../src/lib/config.js';
+import { UPSTREAM_VERSION } from '../src/lib/upstream-version.js';
 
 const base = {
   base_url: 'https://multica.example',
@@ -14,7 +15,7 @@ const base = {
 test('normalization clamps provider type and protocol version', () => {
   const config = normalizeConfig(base);
   assert.equal(config.runtime.type, 'zylos');
-  assert.equal(config.runtime.version, '0.2.21');
+  assert.equal(config.runtime.version, UPSTREAM_VERSION);
   assert.equal(config.poll_interval_s, 15);
 });
 

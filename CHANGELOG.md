@@ -19,9 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Report the real component and runtime capability version as 0.2.21 so the
-  server enables the implemented quick-create contract without claiming the
-  later 0.4.3 priority/due capability tier.
+- Separate the component release version from the upstream compatibility
+  track. Daemon registration now reads the code-owned `UPSTREAM_VERSION`
+  (currently 0.2.21) rather than coupling capability reporting to package
+  metadata; bump it only after aligning with a newer official contract.
 
 ### Security
 

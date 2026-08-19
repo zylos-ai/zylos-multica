@@ -6,6 +6,7 @@ import {
   selectLatestMulticaSchedulerRows,
   validateRegisterContract,
 } from '../src/index.js';
+import { UPSTREAM_VERSION } from '../src/lib/upstream-version.js';
 
 const config = {
   base_url: 'https://multica.example',
@@ -44,8 +45,8 @@ test('register accepts null optional settings without masking the runtime', asyn
     },
   });
   await bridge.register();
-  assert.equal(registerBody.cli_version, 'zylos-multica/0.2.21');
-  assert.equal(registerBody.runtimes[0].version, '0.2.21');
+  assert.equal(registerBody.cli_version, `zylos-multica/${UPSTREAM_VERSION}`);
+  assert.equal(registerBody.runtimes[0].version, UPSTREAM_VERSION);
 });
 
 test('issue delivery uses a real C4 reply route and starts only after delivery', async () => {
