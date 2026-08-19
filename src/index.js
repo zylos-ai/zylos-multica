@@ -11,6 +11,7 @@ import { getConfig, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
 import { storeTaskToken } from './lib/task-tokens.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
+import { createWakeupChannel } from './lib/wakeup.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -94,10 +95,19 @@ export function createBridge(initialConfig, dependencies = {}) {
   let backoffIndex = -1;
   let stopped = false;
   let wakeSleep;
+  let pendingWakeup = false;
+  let wakeupKey;
   const request = dependencies.request ?? multicaRequest;
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
   const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
+  const wakeup = (dependencies.createWakeupChannel ?? createWakeupChannel)({
+    log,
+    onWakeup: () => {
+      pendingWakeup = true;
+      if (backoffIndex < 0) wakeSleep?.();
+    },
+  });
 
   async function register() {
     const response = await request(config, 'POST', '/api/daemon/register', {
@@ -335,6 +345,14 @@ export function createBridge(initialConfig, dependencies = {}) {
 
   async function tick() {
     if (!runtimeId) await register();
+    // (Re)attach the wakeup websocket whenever the registered identity it
+    // serves has changed; a plain reconnect after a drop is the channel's
+    // own job, not tick's.
+    const nextWakeupKey = `${config.base_url}|${runtimeId}`;
+    if (nextWakeupKey !== wakeupKey) {
+      wakeupKey = nextWakeupKey;
+      wakeup.start(config, runtimeId);
+    }
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
     await reconcileScheduledTasks();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
@@ -351,10 +369,15 @@ export function createBridge(initialConfig, dependencies = {}) {
   function updateConfig(nextConfig) {
     config = nextConfig;
     runtimeId = undefined;
+    // The socket may authenticate against stale credentials; drop it now and
+    // let the next successful register re-attach it under the new identity.
+    wakeupKey = undefined;
+    wakeup.stop();
   }
 
   function stop() {
     stopped = true;
+    wakeup.stop();
     wakeSleep?.();
   }
 
@@ -388,7 +411,11 @@ export function createBridge(initialConfig, dependencies = {}) {
       }
       if (stopped) break;
       const seconds = backoffIndex >= 0 ? BACKOFF_STEPS_S[backoffIndex] : config.poll_interval_s;
-      await sleep(seconds * 1000);
+      // A wakeup hint skips the idle wait but never shortens error backoff:
+      // the hint only proves the websocket is alive, not that the failing
+      // HTTP path has recovered.
+      if (backoffIndex >= 0 || !pendingWakeup) await sleep(seconds * 1000);
+      pendingWakeup = false;
     }
   }
 

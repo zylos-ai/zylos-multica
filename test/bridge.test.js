@@ -8,6 +8,8 @@ import {
 } from '../src/index.js';
 import { UPSTREAM_VERSION } from '../src/lib/upstream-version.js';
 
+const noWakeup = { start() {}, stop() {}, supported: () => false };
+
 const config = {
   base_url: 'https://multica.example',
   pat: 'secret',
@@ -35,6 +37,7 @@ test('register probe validates only the consumed runtime contract', () => {
 test('register accepts null optional settings without masking the runtime', async () => {
   let registerBody;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, _method, _path, body) => {
       registerBody = body;
       return {
@@ -66,7 +69,8 @@ test('issue delivery uses a real C4 reply route and starts only after delivery',
     scripts.push({ script, args });
     return { ok: true, stdout: '{"ok":true}', stderr: '' };
   };
-  const bridge = createBridge(config, { request, runScript });
+  const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup, request, runScript });
   assert.equal(await bridge.handleTask({ id: 'task-1', issue_id: 'issue-1' }), true);
   assert.equal(scripts.length, 1);
   assert.ok(scripts[0].script.endsWith('/comm-bridge/scripts/c4-receive.js'));
@@ -79,6 +83,7 @@ test('issue delivery uses a real C4 reply route and starts only after delivery',
 test('delivery failure leaves the Multica task dispatched', async () => {
   const calls = [];
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body) => {
       calls.push({ method, apiPath, body });
       if (apiPath === '/api/issues/issue-1') return { title: 'Task' };
@@ -93,6 +98,7 @@ test('delivery failure leaves the Multica task dispatched', async () => {
 test('chat task persists its scoped token before delivery and start', async () => {
   const events = [];
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     storeTaskToken: (taskId, authToken) => events.push(['token', taskId, authToken]),
     runScript: async () => {
       events.push(['deliver']);
@@ -119,6 +125,7 @@ test('chat task without a persistable scoped token is neither delivered nor star
   let requests = 0;
   let deliveries = 0;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     storeTaskToken: (_taskId, authToken) => {
       if (!authToken) throw new Error('task auth token must be a non-empty string');
     },
@@ -135,6 +142,7 @@ test('future due date schedules with the full task id before start and falls bac
   const scripts = [];
   const due = new Date('2030-01-01T00:00:00.000Z').toISOString();
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     now: () => Date.parse('2029-12-01T00:00:00.000Z'),
     request: async (_config, method, apiPath) => {
       if (apiPath === '/api/issues/issue-2') return { title: 'Future task', due_date: due };
@@ -190,6 +198,7 @@ test('an equally recent non-failed handoff wins over a failed duplicate', () => 
 test('only a failed latest handoff triggers a Multica status preflight', async () => {
   let requestCount = 0;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async () => {
       requestCount++;
       throw new Error('non-failed scheduler rows must not call Multica');
@@ -216,6 +225,7 @@ test('only a failed latest handoff triggers a Multica status preflight', async (
 test('failed scheduler handoff is reconciled with a retryable Multica failure', async () => {
   const calls = [];
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body) => {
       calls.push({ method, apiPath, body });
       if (apiPath === '/api/daemon/register') {
@@ -290,10 +300,12 @@ test('terminal status preflight makes repeated ticks and restart reconciliation 
     }]),
   });
 
-  const firstBridge = createBridge(config, { request, runScript });
+  const firstBridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup, request, runScript });
   await firstBridge.tick();
   await firstBridge.tick();
-  const restartedBridge = createBridge(config, { request, runScript });
+  const restartedBridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup, request, runScript });
   await restartedBridge.tick();
 
   assert.equal(failCount, 1);
@@ -304,6 +316,7 @@ test('every terminal Multica status skips duplicate failure reporting', async ()
   for (const status of ['failed', 'completed', 'cancelled']) {
     let failCount = 0;
     const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
       request: async (_config, method, apiPath) => {
         if (apiPath.endsWith('/status')) return { status };
         if (method === 'POST' && apiPath.endsWith('/fail')) failCount++;
@@ -333,6 +346,7 @@ test('a poisoned failed row does not block later reconciliation or claim', async
   let claimCount = 0;
   const calls = [];
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body) => {
       calls.push({ method, apiPath, body });
       if (apiPath === '/api/daemon/register') {
@@ -401,6 +415,7 @@ test('a permanently missing Multica task never blocks later claim ticks', async 
   let claimCount = 0;
   let statusCount = 0;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, _method, apiPath) => {
       if (apiPath === '/api/daemon/register') {
         return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }] };
@@ -443,6 +458,7 @@ test('a permanently missing Multica task never blocks later claim ticks', async 
 test('an incompatible scheduler list contract warns without blocking claim', async () => {
   let claimCount = 0;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, _method, apiPath) => {
       if (apiPath === '/api/daemon/register') {
         return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }] };
@@ -464,6 +480,7 @@ test('an incompatible scheduler list contract warns without blocking claim', asy
 
 test('scheduler reconciliation fails loudly on an incompatible JSON contract', async () => {
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     runScript: async () => ({ ok: true, stderr: '', stdout: '[{"id":"incomplete"}]' }),
   });
   await assert.rejects(
@@ -472,6 +489,7 @@ test('scheduler reconciliation fails loudly on an incompatible JSON contract', a
   );
 
   const invalidTypeBridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     runScript: async () => ({
       ok: true,
       stderr: '',
@@ -495,6 +513,7 @@ test('scheduler reconciliation fails loudly on an incompatible JSON contract', a
 test('a non-quick task without issue_id is failed and never creates an issue', async () => {
   const calls = [];
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body) => {
       calls.push({ method, apiPath, body });
       return {};
@@ -511,6 +530,7 @@ test('quick-create starts, creates exactly once with origin and attachments, the
   const calls = [];
   const prompt = `\r\n  ${'😀'.repeat(205)}  \r\nBody keeps  spaces and CRLF\r\n`;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body, options) => {
       calls.push({ method, apiPath, body, options });
       if (apiPath === '/api/issues') return { id: 'issue-9', identifier: 'MUL-9' };
@@ -548,6 +568,7 @@ test('invalid quick-create prompt and attachment ids fail before start or issue 
   ]) {
     const calls = [];
     const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
       request: async (_config, method, apiPath, body) => {
         calls.push({ method, apiPath, body });
         return {};
@@ -564,6 +585,7 @@ test('quick-create never replays issue creation and retries only the failure cal
   const calls = [];
   let failAttempts = 0;
   const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
     request: async (_config, method, apiPath, body) => {
       calls.push({ method, apiPath, body });
       if (apiPath === '/api/issues') throw new Error('ambiguous timeout');
@@ -578,4 +600,108 @@ test('quick-create never replays issue creation and retries only the failure cal
   assert.equal(calls.filter((call) => call.apiPath.endsWith('/start')).length, 1);
   assert.equal(calls.filter((call) => call.apiPath.endsWith('/fail')).length, 2);
   assert.equal(calls.filter((call) => call.apiPath.endsWith('/complete')).length, 0);
+});
+
+test('tick attaches the wakeup channel per registered identity and updateConfig detaches it', async () => {
+  const events = [];
+  let captured;
+  const channel = {
+    start: (cfg, runtimeId) => events.push(['start', runtimeId]),
+    stop: () => events.push(['stop']),
+    supported: () => true,
+  };
+  const request = async (_config, _method, apiPath) => {
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    return { tasks: [] };
+  };
+  const bridge = createBridge({ ...config }, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '[]', stderr: '' }),
+    createWakeupChannel: (opts) => { captured = opts; return channel; },
+  });
+  await bridge.tick();
+  await bridge.tick();
+  assert.deepEqual(events, [['start', 'runtime-1']], 'same identity must attach exactly once');
+  assert.equal(typeof captured.onWakeup, 'function');
+  bridge.updateConfig({ ...config });
+  assert.deepEqual(events.at(-1), ['stop'], 'config change must drop the stale socket');
+  await bridge.tick();
+  assert.deepEqual(events.at(-1), ['start', 'runtime-1'], 're-register must re-attach');
+  bridge.stop();
+});
+
+test('a wakeup hint cuts the idle wait between ticks', async () => {
+  let claims = 0;
+  let captured;
+  const request = async (_config, _method, apiPath) => {
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    if (apiPath === '/api/daemon/tasks/claim') claims++;
+    return { tasks: [] };
+  };
+  const bridge = createBridge({ ...config, poll_interval_s: 300 }, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '[]', stderr: '' }),
+    createWakeupChannel: (opts) => {
+      captured = opts;
+      return { start() {}, stop() {}, supported: () => true };
+    },
+  });
+  const running = bridge.run();
+  const waitFor = async (predicate) => {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(predicate(), 'condition not reached in time');
+  };
+  await waitFor(() => claims === 1);
+  captured.onWakeup();
+  await waitFor(() => claims >= 2);
+  bridge.stop();
+  await running;
+});
+
+test('a wakeup hint never shortens error backoff', async () => {
+  let claimAttempts = 0;
+  let captured;
+  let failClaim;
+  const request = async (_config, _method, apiPath) => {
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    if (apiPath === '/api/daemon/tasks/claim') {
+      claimAttempts++;
+      return new Promise((_resolve, reject) => {
+        failClaim = () => reject(new Error('claim endpoint down'));
+      });
+    }
+    return { tasks: [] };
+  };
+  const bridge = createBridge({ ...config, poll_interval_s: 1 }, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '[]', stderr: '' }),
+    createWakeupChannel: (opts) => {
+      captured = opts;
+      return { start() {}, stop() {}, supported: () => true };
+    },
+  });
+  const running = bridge.run();
+  const waitFor = async (predicate) => {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(predicate(), 'condition not reached in time');
+  };
+  await waitFor(() => claimAttempts === 1);
+  // Hint lands while the failing claim is still in flight: the pending flag it
+  // sets must not let the loop skip the upcoming backoff sleep.
+  captured.onWakeup();
+  failClaim();
+  // Let the loop record the failure and enter the backoff sleep, then hint
+  // again mid-sleep: it must not cut that sleep short either.
+  await new Promise((r) => setTimeout(r, 100));
+  captured.onWakeup();
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(claimAttempts, 1, 'wakeup hints must not shorten error backoff');
+  bridge.stop();
+  await running;
 });
