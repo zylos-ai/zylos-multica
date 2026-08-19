@@ -46,4 +46,5 @@
 
 - 开发 = Jinglever，CR = Luna（crew 标准：finding 必须引源码行，证据独立重放）。评审载体走 OpenMax Issue/Blueprint。
 - 发版硬门：solution §10 验收通过 + Howard 明确 go。CHANGELOG 在发版 PR 中由 `[Unreleased]` 切版本号。
+- 发版 PR 必须同步 bump 三处版本：CHANGELOG 切版 + `package.json` `version` + `SKILL.md` frontmatter `version`（core 以 SKILL.md 为准登记与判断升级；漏 bump 会导致重复升级提示——v0.3.0 教训）。`UPSTREAM_VERSION` 是独立协议能力值，只在对齐新官方契约时才动。
 - 卡片中一切 Multica 来源文本必须过 route-marker 消毒（solution §4.4）。
