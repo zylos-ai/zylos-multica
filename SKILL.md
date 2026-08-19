@@ -34,8 +34,8 @@ config:
     - name: MULTICA_PAT
       description: Multica personal access token
       sensitive: true
-    - name: MULTICA_WORKSPACE_ID
-      description: Multica workspace UUID served by this runtime
+    - name: MULTICA_WORKSPACE_SLUG
+      description: Workspace slug as shown in the Multica web URL (e.g. zylos-lab)
     - name: MULTICA_RUNTIME_NAME
       description: Runtime display name, normally the agent name followed by (zylos)
   optional:

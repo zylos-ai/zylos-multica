@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { UPSTREAM_VERSION } from './upstream-version.js';
+import { WORKSPACE_SLUG_PATTERN } from './workspace.js';
 
 export const DATA_DIR = path.join(os.homedir(), 'zylos/components/multica');
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
@@ -33,7 +34,22 @@ export function normalizeConfig(input) {
   const config = { ...DEFAULT_CONFIG, ...input };
   config.base_url = requireString(config.base_url, 'base_url').replace(/\/+$/, '');
   config.pat = requireString(config.pat, 'pat');
-  config.workspace_id = requireString(config.workspace_id, 'workspace_id');
+  const slug = typeof config.workspace_slug === 'string' ? config.workspace_slug.trim() : '';
+  const legacyId = typeof config.workspace_id === 'string' ? config.workspace_id.trim() : '';
+  if (slug) {
+    if (!WORKSPACE_SLUG_PATTERN.test(slug)) {
+      throw new Error('workspace_slug must match ^[a-z0-9]+(-[a-z0-9]+)*$ (the slug shown in the workspace URL)');
+    }
+    config.workspace_slug = slug;
+    // The UUID is resolved from the slug at runtime; any stored value is stale.
+    delete config.workspace_id;
+  } else if (legacyId) {
+    // Pre-slug config: keep the UUID so the daemon can migrate it in place.
+    config.workspace_id = legacyId;
+    delete config.workspace_slug;
+  } else {
+    throw new Error('Missing required config field: workspace_slug');
+  }
   config.daemon_id = requireString(config.daemon_id, 'daemon_id');
 
   let parsedUrl;
@@ -93,6 +109,13 @@ export function writeConfigAtomic(value, configPath = CONFIG_PATH) {
     try { fs.unlinkSync(tempPath); } catch {}
     throw error;
   }
+}
+
+export function persistWorkspaceSlugMigration(slug, configPath = CONFIG_PATH) {
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  raw.workspace_slug = slug;
+  delete raw.workspace_id;
+  writeConfigAtomic(raw, configPath);
 }
 
 export function watchConfig(onChange) {

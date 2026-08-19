@@ -25,3 +25,26 @@ test('normalization rejects URLs with embedded credentials', () => {
     /embedded credentials/,
   );
 });
+
+test('workspace_slug is required, validated, and supersedes a stored workspace_id', () => {
+  const slugged = normalizeConfig({ ...base, workspace_slug: 'zylos-lab' });
+  assert.equal(slugged.workspace_slug, 'zylos-lab');
+  assert.equal(slugged.workspace_id, undefined, 'stored UUID is stale once a slug is set');
+
+  assert.throws(
+    () => normalizeConfig({ ...base, workspace_slug: 'Not-A-Slug' }),
+    /workspace_slug must match/,
+  );
+
+  const { workspace_id, ...withoutWorkspace } = base;
+  assert.throws(
+    () => normalizeConfig(withoutWorkspace),
+    /Missing required config field: workspace_slug/,
+  );
+});
+
+test('a legacy workspace_id config still normalizes for in-place migration', () => {
+  const legacy = normalizeConfig(base);
+  assert.equal(legacy.workspace_id, 'workspace-1');
+  assert.equal(legacy.workspace_slug, undefined);
+});

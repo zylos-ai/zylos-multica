@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { migrateWorkspaceSlug } from './lib/workspace-slug-migration.js';
+
 const DATA_DIR = path.join(os.homedir(), 'zylos/components/multica');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
@@ -33,6 +35,13 @@ try {
   if (!config.daemon_id) {
     config.daemon_id = crypto.randomUUID();
     changed = true;
+  }
+  const slugMigration = await migrateWorkspaceSlug(config);
+  if (slugMigration.changed) {
+    changed = true;
+    console.log(`[multica] ${slugMigration.note}`);
+  } else if (slugMigration.warning) {
+    console.warn(`[multica] ${slugMigration.warning}`);
   }
   if (changed) atomicWrite(config);
   else fs.chmodSync(CONFIG_PATH, 0o600);

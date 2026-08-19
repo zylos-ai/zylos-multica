@@ -7,8 +7,9 @@ import path from 'node:path';
 
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
-import { getConfig, stopWatching, watchConfig } from './lib/config.js';
+import { getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
+import { ensureWorkspaceResolved } from './lib/workspace.js';
 import { storeTaskToken } from './lib/task-tokens.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 import { createWakeupChannel } from './lib/wakeup.js';
@@ -98,6 +99,8 @@ export function createBridge(initialConfig, dependencies = {}) {
   let pendingWakeup = false;
   let wakeupKey;
   const request = dependencies.request ?? multicaRequest;
+  const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
+  const persistMigration = dependencies.persistWorkspaceSlugMigration ?? persistWorkspaceSlugMigration;
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
   const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
@@ -343,7 +346,26 @@ export function createBridge(initialConfig, dependencies = {}) {
     return true;
   }
 
+  async function ensureWorkspace() {
+    if (config.workspace_slug && config.workspace_id) return;
+    const migrating = !config.workspace_slug && Boolean(config.workspace_id);
+    await resolveWorkspace(config, {
+      request,
+      onMigrated: (workspace) => {
+        persistMigration(workspace.slug);
+        log('INFO', 'workspace_id config migrated to workspace_slug', { workspace_slug: workspace.slug });
+      },
+    });
+    if (!migrating) {
+      log('INFO', 'workspace resolved', {
+        workspace_slug: config.workspace_slug,
+        workspace_id: config.workspace_id,
+      });
+    }
+  }
+
   async function tick() {
+    await ensureWorkspace();
     if (!runtimeId) await register();
     // (Re)attach the wakeup websocket whenever the registered identity it
     // serves has changed; a plain reconnect after a drop is the channel's

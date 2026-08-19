@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { multicaRequest } from './multica-api.js';
 import { loadTaskToken } from './task-tokens.js';
+import { ensureWorkspaceResolved } from './workspace.js';
 
 const ISSUE_SORTS = new Set(['position', 'title', 'created_at', 'start_date', 'due_date', 'priority']);
 const DIRECTIONAL_SORTS = new Set(['title', 'created_at', 'start_date', 'due_date', 'priority']);
@@ -291,6 +292,9 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   };
   const { positionals, flags } = parseArgs(argv);
   const [group, command, subcommand, ...rest] = positionals;
+  const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
+  // chat history authenticates with the task-scoped token, not the PAT.
+  if (group === 'issue') await resolveWorkspace(config, { request });
   let response;
   if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
   else if (group === 'issue' && command === 'get') response = await issueGet(config, [subcommand, ...rest].filter((value) => value !== undefined), flags, request);

@@ -10,6 +10,7 @@ import { runBusinessCLI } from '../src/lib/business-cli.js';
 const config = {
   base_url: 'https://multica.example',
   pat: 'secret',
+  workspace_slug: 'workspace-1',
   workspace_id: 'workspace-1',
 };
 
