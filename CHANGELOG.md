@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Add a README "Onboarding a new zylos agent" section covering the verified
+  flow for connecting an additional agent machine: core upgrade, per-machine
+  PAT, workspace ID discovery via `/api/workspaces`, private PAT delivery, and
+  post-install verification.
+
 ## [0.2.21] - 2026-08-19
 
 ### Added
