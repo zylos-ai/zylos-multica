@@ -756,3 +756,35 @@ test('tick migrates a legacy workspace_id config in place before registering', a
   const registerCall = calls.find((call) => call.apiPath === '/api/daemon/register');
   assert.ok(registerCall, 'registration must proceed after migration');
 });
+
+test('a failed slug-migration persistence is retried on the next tick', async () => {
+  const calls = [];
+  const persisted = [];
+  let persistAttempts = 0;
+  const request = async (_config, method, apiPath) => {
+    calls.push({ method, apiPath });
+    if (apiPath === '/api/workspaces') return [{ id: 'workspace-1', slug: 'zylos-lab', name: 'Zylos Lab' }];
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    return { tasks: [] };
+  };
+  const legacyConfig = { ...config };
+  delete legacyConfig.workspace_slug;
+  const bridge = createBridge(legacyConfig, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '', stderr: '' }),
+    persistWorkspaceSlugMigration: (slug) => {
+      if (persistAttempts++ === 0) throw new Error('transient write failure');
+      persisted.push(slug);
+    },
+    createWakeupChannel: () => noWakeup,
+  });
+  await assert.rejects(() => bridge.tick(), /transient write failure/);
+  assert.equal(legacyConfig.workspace_slug, undefined, 'in-memory slug must not outlive the failed persistence');
+  await bridge.tick();
+  assert.equal(persistAttempts, 2, 'the next tick must retry persistence');
+  assert.deepEqual(persisted, ['zylos-lab']);
+  assert.equal(legacyConfig.workspace_slug, 'zylos-lab');
+  assert.ok(calls.find((call) => call.apiPath === '/api/daemon/register'), 'registration must proceed after the retried migration');
+});

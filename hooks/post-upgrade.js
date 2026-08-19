@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { migrateWorkspaceSlug } from './lib/workspace-slug-migration.js';
+
 const configPath = path.join(os.homedir(), 'zylos/components/multica/config.json');
 
 function atomicWrite(value) {
@@ -45,6 +47,12 @@ try {
     config._legacy_runtime_type ??= config.runtime.type;
     delete config.runtime.type;
     migrations.push('preserved runtime.type as _legacy_runtime_type; provider is fixed to zylos');
+  }
+  const slugMigration = await migrateWorkspaceSlug(config);
+  if (slugMigration.changed) {
+    migrations.push(slugMigration.note);
+  } else if (slugMigration.warning) {
+    console.warn(`[multica] ${slugMigration.warning}`);
   }
   if (migrations.length) {
     atomicWrite(config);

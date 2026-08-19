@@ -79,3 +79,22 @@ test('slug pattern matches the server contract', () => {
     assert.ok(!WORKSPACE_SLUG_PATTERN.test(slug), `should reject ${JSON.stringify(slug)}`);
   }
 });
+
+test('a failed migration persistence leaves the config unmigrated so it can retry', async () => {
+  const { request } = harness();
+  const config = { workspace_id: 'uuid-ops' };
+  await assert.rejects(
+    () => ensureWorkspaceResolved(config, {
+      request,
+      onMigrated: () => { throw new Error('disk full'); },
+    }),
+    /disk full/,
+  );
+  assert.equal(config.workspace_slug, undefined, 'slug must not commit before persistence succeeds');
+
+  const migrated = [];
+  const id = await ensureWorkspaceResolved(config, { request, onMigrated: (w) => migrated.push(w) });
+  assert.equal(id, 'uuid-ops');
+  assert.equal(config.workspace_slug, 'zylos-ops');
+  assert.deepEqual(migrated, [WORKSPACES[1]], 'retry must re-attempt persistence');
+});

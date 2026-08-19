@@ -231,3 +231,58 @@ test('post-install defers migration when the server is unreachable', async () =>
   assert.equal(config.workspace_slug, undefined);
   assert.match(result.stdout + result.stderr, /migration deferred/);
 });
+
+test('post-upgrade migrates a legacy workspace_id config to workspace_slug', async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/workspaces' && req.headers.authorization === 'Bearer legacy-pat') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify([{ id: 'uuid-lab', slug: 'zylos-lab', name: 'Zylos Lab' }]));
+      return;
+    }
+    res.statusCode = 401;
+    res.end('{}');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-postupgrade-slug-'));
+  const dataDir = path.join(home, 'zylos/components/multica');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const configPath = path.join(dataDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    enabled: true,
+    poll_interval_s: 15,
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    pat: 'legacy-pat',
+    workspace_id: 'uuid-lab',
+    daemon_id: 'daemon-1',
+    runtime: { name: 'Agent (zylos)' },
+  }), { mode: 0o600 });
+  const result = await runAsync('hooks/post-upgrade.js', [], { env: { ...process.env, HOME: home } });
+  server.close();
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(config.workspace_slug, 'zylos-lab');
+  assert.equal(config.workspace_id, undefined);
+  assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+});
+
+test('post-upgrade defers the slug migration when the server is unreachable', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-postupgrade-slug-off-'));
+  const dataDir = path.join(home, 'zylos/components/multica');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const configPath = path.join(dataDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    enabled: true,
+    poll_interval_s: 15,
+    base_url: 'http://127.0.0.1:1',
+    pat: 'legacy-pat',
+    workspace_id: 'uuid-lab',
+    daemon_id: 'daemon-1',
+    runtime: { name: 'Agent (zylos)' },
+  }), { mode: 0o600 });
+  const result = await runAsync('hooks/post-upgrade.js', [], { env: { ...process.env, HOME: home } });
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(config.workspace_id, 'uuid-lab', 'config must stay untouched for daemon self-heal');
+  assert.equal(config.workspace_slug, undefined);
+  assert.match(result.stdout + result.stderr, /migration deferred/);
+});
