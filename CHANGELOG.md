@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Adopt the official daemon's wakeup WebSocket (`GET /api/daemon/ws`): the
+  server's `daemon:task_available` / `daemon:pending_work` hints wake the
+  poll loop immediately for near-instant delivery, while claiming stays on
+  the HTTP claim path and `poll_interval_s` polling remains the fallback.
+  Reconnects use jittered exponential backoff with a stable-connection
+  reset; a silent socket is recycled after an idle timeout; hints never
+  shorten error backoff. Requires the Node 22+ global WebSocket — older
+  runtimes log one warning and stay poll-only. (#12)
+
 ## [0.2.21] - 2026-08-19
 
 ### Added

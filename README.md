@@ -142,6 +142,22 @@ not claim from the same runtime. Install with the same base URL, PAT, workspace
 ID, and daemon ID; registration is idempotent. Keep the old bridge stopped until
 the live issue and chat checks pass.
 
+## Delivery latency
+
+The bridge mirrors the official daemon's dual-channel model. After
+registration it holds a wakeup WebSocket to `GET /api/daemon/ws`
+(PAT-authenticated); when the server pushes a `daemon:task_available` or
+`daemon:pending_work` hint, the poll loop wakes immediately and claims over
+the existing HTTP claim path, so delivery is near-instant while claiming
+semantics are unchanged. The `poll_interval_s` loop keeps running as the
+fallback delivery path: if the socket drops, the bridge reconnects with
+jittered exponential backoff (1s → 30s, reset after 10s of stable
+connection) and polling covers the gap. A silent socket is recycled after
+60s without frames. Wakeup hints never shorten error backoff.
+
+The wakeup socket needs the global `WebSocket` client (Node 22+). On older
+Node runtimes the bridge logs one warning and stays poll-only.
+
 ## Operations
 
 The service fails fast if the register response does not expose the registered
