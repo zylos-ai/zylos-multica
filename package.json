@@ -1,6 +1,6 @@
 {
   "name": "zylos-multica",
-  "version": "0.2.21",
+  "version": "0.3.0",
   "description": "Multica task-platform channel: bridges a Multica deployment to the agent's live session via the daemon protocol",
   "type": "module",
   "main": "src/index.js",
