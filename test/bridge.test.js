@@ -661,3 +661,47 @@ test('a wakeup hint cuts the idle wait between ticks', async () => {
   bridge.stop();
   await running;
 });
+
+test('a wakeup hint never shortens error backoff', async () => {
+  let claimAttempts = 0;
+  let captured;
+  let failClaim;
+  const request = async (_config, _method, apiPath) => {
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    if (apiPath === '/api/daemon/tasks/claim') {
+      claimAttempts++;
+      return new Promise((_resolve, reject) => {
+        failClaim = () => reject(new Error('claim endpoint down'));
+      });
+    }
+    return { tasks: [] };
+  };
+  const bridge = createBridge({ ...config, poll_interval_s: 1 }, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '[]', stderr: '' }),
+    createWakeupChannel: (opts) => {
+      captured = opts;
+      return { start() {}, stop() {}, supported: () => true };
+    },
+  });
+  const running = bridge.run();
+  const waitFor = async (predicate) => {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(predicate(), 'condition not reached in time');
+  };
+  await waitFor(() => claimAttempts === 1);
+  // Hint lands while the failing claim is still in flight: the pending flag it
+  // sets must not let the loop skip the upcoming backoff sleep.
+  captured.onWakeup();
+  failClaim();
+  // Let the loop record the failure and enter the backoff sleep, then hint
+  // again mid-sleep: it must not cut that sleep short either.
+  await new Promise((r) => setTimeout(r, 100));
+  captured.onWakeup();
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(claimAttempts, 1, 'wakeup hints must not shorten error backoff');
+  bridge.stop();
+  await running;
+});

@@ -144,12 +144,15 @@ the live issue and chat checks pass.
 
 ## Delivery latency
 
-The bridge mirrors the official daemon's dual-channel model. After
+The bridge adopts the official daemon's wakeup WebSocket. After
 registration it holds a wakeup WebSocket to `GET /api/daemon/ws`
 (PAT-authenticated); when the server pushes a `daemon:task_available` or
 `daemon:pending_work` hint, the poll loop wakes immediately and claims over
 the existing HTTP claim path, so delivery is near-instant while claiming
-semantics are unchanged. The `poll_interval_s` loop keeps running as the
+semantics are unchanged. (The official daemon can additionally negotiate a
+`tasks.claim` RPC over this socket; the bridge deliberately keeps claiming
+on HTTP — a supported official fallback — to avoid the double-claim race
+surface that WS-first claiming has to manage.) The `poll_interval_s` loop keeps running as the
 fallback delivery path: if the socket drops, the bridge reconnects with
 jittered exponential backoff (1s → 30s, reset after 10s of stable
 connection) and polling covers the gap. A silent socket is recycled after
