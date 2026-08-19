@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shorten error backoff. Requires the Node 22+ global WebSocket — older
   runtimes log one warning and stay poll-only. (#12)
 
+### Changed
+
+- Replace the `workspace_id` config parameter with `workspace_slug`
+  (`MULTICA_WORKSPACE_SLUG`). The bridge resolves the slug to the workspace
+  UUID at startup via `GET /api/workspaces`; an unknown slug fails fast and
+  lists the account's available slugs. Legacy `workspace_id` configs are
+  migrated in place by post-install when the server is reachable, or by the
+  daemon on startup otherwise. (#11)
+
 ## [0.2.21] - 2026-08-19
 
 ### Added

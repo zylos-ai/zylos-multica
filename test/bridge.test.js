@@ -13,6 +13,7 @@ const noWakeup = { start() {}, stop() {}, supported: () => false };
 const config = {
   base_url: 'https://multica.example',
   pat: 'secret',
+  workspace_slug: 'workspace-1',
   workspace_id: 'workspace-1',
   daemon_id: 'daemon-1',
   poll_interval_s: 15,
@@ -704,4 +705,54 @@ test('a wakeup hint never shortens error backoff', async () => {
   assert.equal(claimAttempts, 1, 'wakeup hints must not shorten error backoff');
   bridge.stop();
   await running;
+});
+
+test('tick resolves the workspace slug before registering and reuses the cached UUID', async () => {
+  const calls = [];
+  const request = async (_config, method, apiPath, body) => {
+    calls.push({ method, apiPath, body });
+    if (apiPath === '/api/workspaces') return [{ id: 'uuid-lab', slug: 'zylos-lab', name: 'Zylos Lab' }];
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    return { tasks: [] };
+  };
+  const slugConfig = { ...config, workspace_slug: 'zylos-lab' };
+  delete slugConfig.workspace_id;
+  const bridge = createBridge(slugConfig, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '', stderr: '' }),
+    createWakeupChannel: () => noWakeup,
+  });
+  await bridge.tick();
+  await bridge.tick();
+  const registerCall = calls.find((call) => call.apiPath === '/api/daemon/register');
+  assert.equal(registerCall.body.workspace_id, 'uuid-lab');
+  assert.equal(calls.filter((call) => call.apiPath === '/api/workspaces').length, 1, 'second tick must not re-resolve');
+});
+
+test('tick migrates a legacy workspace_id config in place before registering', async () => {
+  const calls = [];
+  const persisted = [];
+  const request = async (_config, method, apiPath) => {
+    calls.push({ method, apiPath });
+    if (apiPath === '/api/workspaces') return [{ id: 'workspace-1', slug: 'zylos-lab', name: 'Zylos Lab' }];
+    if (apiPath === '/api/daemon/register') {
+      return { runtimes: [{ id: 'runtime-1', provider: 'zylos' }], repos: [], settings: null };
+    }
+    return { tasks: [] };
+  };
+  const legacyConfig = { ...config };
+  delete legacyConfig.workspace_slug;
+  const bridge = createBridge(legacyConfig, {
+    request,
+    runScript: async () => ({ ok: true, stdout: '', stderr: '' }),
+    persistWorkspaceSlugMigration: (slug) => persisted.push(slug),
+    createWakeupChannel: () => noWakeup,
+  });
+  await bridge.tick();
+  assert.deepEqual(persisted, ['zylos-lab']);
+  assert.equal(legacyConfig.workspace_slug, 'zylos-lab');
+  const registerCall = calls.find((call) => call.apiPath === '/api/daemon/register');
+  assert.ok(registerCall, 'registration must proceed after migration');
 });

@@ -34,6 +34,31 @@ try {
     config.daemon_id = crypto.randomUUID();
     changed = true;
   }
+  if (!config.workspace_slug && config.workspace_id && config.base_url && config.pat) {
+    // Best-effort legacy migration; the daemon self-heals on startup if this
+    // machine cannot reach the server right now.
+    try {
+      const response = await fetch(new URL('/api/workspaces', config.base_url), {
+        headers: { Authorization: `Bearer ${config.pat}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const workspaces = await response.json();
+      const match = Array.isArray(workspaces)
+        ? workspaces.find((workspace) => workspace && workspace.id === config.workspace_id)
+        : undefined;
+      if (match?.slug) {
+        config.workspace_slug = match.slug;
+        delete config.workspace_id;
+        changed = true;
+        console.log(`[multica] Migrated workspace_id config to workspace_slug "${match.slug}"`);
+      } else {
+        console.warn('[multica] workspace_slug migration skipped: stored workspace_id not found for this PAT');
+      }
+    } catch (error) {
+      console.warn(`[multica] workspace_slug migration deferred (${error.message}); the daemon migrates on startup`);
+    }
+  }
   if (changed) atomicWrite(config);
   else fs.chmodSync(CONFIG_PATH, 0o600);
   console.log('[multica] Post-install setup complete');
