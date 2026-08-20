@@ -52,6 +52,55 @@ The installer collects the Multica base URL, PAT, workspace slug, and runtime
 display name. It generates a stable daemon ID unless an existing ID is supplied
 during migration.
 
+## Onboarding a new zylos agent
+
+Checklist for connecting an additional Zylos agent machine to an existing
+Multica workspace. The flow below matches a verified real onboarding of a
+second agent machine.
+
+1. **Upgrade zylos-core first.** The install preview reports the required core
+   level (see [Install](#install)); upgrade before installing so due-date
+   reconciliation works from day one:
+
+   ```bash
+   zylos upgrade --self
+   ```
+
+2. **Create a dedicated PAT for the new machine.** The account model: a PAT is
+   a machine registration credential, while identity lives at the agent layer.
+   Reuse the same Multica account, but issue one token per machine — never
+   share an existing machine's PAT. In the Multica web UI:
+   Settings → API Tokens → Create (suggested name: `<agent>-bridge`).
+
+3. **Gather the three config values.**
+   - `base_url` — the deployment origin, exactly what the browser address bar
+     shows, without a path (e.g. `https://multica.example.com`).
+   - `workspace_slug` — the workspace slug visible in the web URL
+     (e.g. the `my-workspace` part of `https://multica.example.com/my-workspace/…`).
+     The bridge resolves this to the workspace UUID at startup automatically.
+   - `runtime.name` — the display name shown in the Runtimes panel,
+     e.g. `"My Agent (zylos)"`.
+
+4. **Install and configure.**
+
+   ```bash
+   zylos add zylos-ai/zylos-multica
+   ```
+
+   The installer prompts for every required value. Deliver the PAT to the new
+   machine's operator over a private channel only — never in a group chat or
+   task record. It is stored solely in the mode-0600 component config.
+
+5. **Verify.** After the service starts:
+   - `pm2 status zylos-multica` shows `online` with no restarts;
+   - the delivery log records a successful registration;
+   - the new runtime appears in the workspace's Runtimes panel;
+   - a test web-chat message reaches the agent and the reply closes the task.
+
+Chat and issue tasks are claimed on a `poll_interval_s` cadence (default 15s),
+so a queued message can wait up to one full interval before delivery. Lower the
+value in the component config for snappier interactive chat.
+
 ## Configuration
 
 Runtime configuration is stored at `~/zylos/components/multica/config.json`:
