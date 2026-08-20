@@ -75,14 +75,9 @@ second agent machine.
 3. **Gather the three config values.**
    - `base_url` — the deployment origin, exactly what the browser address bar
      shows, without a path (e.g. `https://multica.example.com`).
-   - `workspace_id` — the workspace UUID. It is **not visible in the web UI**
-     (page URLs show the slug, not the UUID). Query it with the PAT:
-
-     ```bash
-     curl -s -H "Authorization: Bearer $PAT" https://multica.example.com/api/workspaces
-     ```
-
-     The response lists each workspace's `id`, `slug`, and `name`.
+   - `workspace_slug` — the workspace slug visible in the web URL
+     (e.g. the `my-workspace` part of `https://multica.example.com/my-workspace/…`).
+     The bridge resolves this to the workspace UUID at startup automatically.
    - `runtime.name` — the display name shown in the Runtimes panel,
      e.g. `"My Agent (zylos)"`.
 
