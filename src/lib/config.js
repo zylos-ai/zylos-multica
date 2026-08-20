@@ -26,6 +26,38 @@ function requireString(value, field) {
   return value.trim();
 }
 
+// Loopback is the only place cleartext http/ws may carry the PAT (development).
+export function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+// Single validator for every credential-bearing endpoint: runtime config,
+// configure hook, slug migration, and (defensively) the wakeup WebSocket all
+// route through this contract — origin-only https, with cleartext allowed
+// only on loopback.
+export function validateBaseUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('base_url must be a valid http(s) URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('base_url must use http or https');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('base_url must not contain embedded credentials');
+  }
+  if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') {
+    throw new Error('base_url must be origin-only (no path, query, or fragment)');
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackHostname(parsed.hostname)) {
+    throw new Error('base_url must use https for non-loopback hosts (http is only allowed for loopback development endpoints)');
+  }
+  return parsed;
+}
+
 export function normalizeConfig(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') {
     throw new Error('Config must be a JSON object');
@@ -52,18 +84,7 @@ export function normalizeConfig(input) {
   }
   config.daemon_id = requireString(config.daemon_id, 'daemon_id');
 
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(config.base_url);
-  } catch {
-    throw new Error('base_url must be a valid http(s) URL');
-  }
-  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-    throw new Error('base_url must use http or https');
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    throw new Error('base_url must not contain embedded credentials');
-  }
+  validateBaseUrl(config.base_url);
 
   const pollInterval = Number(config.poll_interval_s);
   if (!Number.isFinite(pollInterval) || pollInterval < 1 || pollInterval > 300) {

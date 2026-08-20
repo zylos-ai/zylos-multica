@@ -140,3 +140,57 @@ test('chat history requires a task and uses only its scoped token', async () => 
     /--task is required/,
   );
 });
+
+
+test('an invalid --output fails before any API call on every command', async () => {
+  const argvCases = [
+    // Mutating commands: a late argument error after the POST would strand a
+    // completed side effect behind a FAILED exit (duplicate-on-retry).
+    ['issue', 'create', '--title', 'Title', '--output', 'yaml'],
+    ['issue', 'create', '--title', 'Title', '--output'],
+    ['issue', 'create', '--title', 'Title', '--output', 'json', '--output', 'json'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output', 'yaml'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output'],
+    // Read commands share the same validate-before-request invariant.
+    ['issue', 'get', 'PROJ-1', '--output', 'yaml'],
+    ['issue', 'list', '--output', 'yaml'],
+    ['issue', 'comment', 'list', 'PROJ-1', '--output', 'yaml'],
+  ];
+  for (const argv of argvCases) {
+    const h = harness({ id: 'issue-1' });
+    await assert.rejects(runBusinessCLI(config, argv, h.dependencies), /--output/);
+    assert.equal(h.calls.length, 0, `no request may precede --output validation for: ${argv.join(' ')}`);
+  }
+
+  const chat = harness({ messages: [] });
+  chat.dependencies.loadTaskToken = () => 'task-token';
+  await assert.rejects(
+    runBusinessCLI(config, ['chat', 'history', '--task', 'task-1', '--output', 'yaml'], chat.dependencies),
+    /--output/,
+  );
+  assert.equal(chat.calls.length, 0);
+});
+
+test('table output renders remote control characters as inert single-line escapes', async () => {
+  const h = harness({
+    issues: [{
+      id: 'issue-1',
+      title: 'evil\u001b]0;pwned\u0007\tcol\r\nforged=row',
+    }],
+    total: 1,
+  });
+  await runBusinessCLI(config, ['issue', 'list', '--output', 'table'], h.dependencies);
+  const body = h.output();
+  const lines = body.trimEnd().split('\n');
+  assert.equal(lines.length, 1, 'one record renders exactly one line');
+  assert.match(lines[0], /evil\\x1b\]0;pwned\\x07\\tcol\\r\\nforged=row/);
+  // No raw C0/C1 byte survives except the structural field-separator tabs
+  // and the record-terminating newline.
+  // eslint-disable-next-line no-control-regex
+  assert.doesNotMatch(body.replaceAll('\t', '').replaceAll('\n', ''), /[\u0000-\u001f\u007f-\u009f]/);
+  assert.ok(lines[0].split('\t').length >= 2, 'structural field separators are preserved');
+
+  const hJson = harness({ issues: [{ id: 'issue-1', title: 'plain' }], total: 1 });
+  await runBusinessCLI(config, ['issue', 'list', '--output', 'json'], hJson.dependencies);
+  assert.ok(JSON.parse(hJson.output()), 'json output stays structurally valid');
+});

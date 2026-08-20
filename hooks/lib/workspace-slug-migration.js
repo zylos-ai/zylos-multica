@@ -1,3 +1,5 @@
+import { validateBaseUrl } from '../../src/lib/config.js';
+
 /**
  * Shared legacy workspace_id -> workspace_slug config migration, used by both
  * post-install and post-upgrade so the canonical `zylos upgrade` path (which
@@ -10,6 +12,9 @@ export async function migrateWorkspaceSlug(config) {
     return { changed: false };
   }
   try {
+    // Same endpoint contract as the daemon: a stored config that predates the
+    // origin-only/https rule must not leak the PAT during a hook-time fetch.
+    validateBaseUrl(config.base_url);
     const response = await fetch(new URL('/api/workspaces', config.base_url), {
       headers: { Authorization: `Bearer ${config.pat}` },
       signal: AbortSignal.timeout(15_000),

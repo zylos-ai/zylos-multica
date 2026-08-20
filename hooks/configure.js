@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { validateBaseUrl } from '../src/lib/config.js';
+
 const CONFIG_PATH = path.join(os.homedir(), 'zylos/components/multica/config.json');
 const DEFAULTS = { enabled: true, poll_interval_s: 15 };
 
@@ -77,10 +79,8 @@ try {
   } else if (!legacyId) {
     throw new Error('Missing required configuration: workspace_slug');
   }
-  const baseUrl = new URL(config.base_url);
-  if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
-    throw new Error('base_url must be an http(s) URL without embedded credentials');
-  }
+  config.base_url = String(config.base_url).trim().replace(/\/+$/, '');
+  validateBaseUrl(config.base_url);
   const pollInterval = Number(config.poll_interval_s);
   if (!Number.isFinite(pollInterval) || pollInterval < 1 || pollInterval > 300) {
     throw new Error('poll_interval_s must be between 1 and 300');

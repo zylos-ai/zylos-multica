@@ -286,3 +286,58 @@ test('post-upgrade defers the slug migration when the server is unreachable', as
   assert.equal(config.workspace_slug, undefined);
   assert.match(result.stdout + result.stderr, /migration deferred/);
 });
+
+test('configure shares the runtime base_url contract: no cleartext off loopback, origin-only', () => {
+  const rejected = [
+    ['http://multica.example', /https for non-loopback/],
+    ['https://multica.example/base', /origin-only/],
+  ];
+  for (const [baseUrl, pattern] of rejected) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-config-'));
+    const input = JSON.stringify({
+      MULTICA_BASE_URL: baseUrl,
+      MULTICA_PAT: 'pat-value',
+      MULTICA_WORKSPACE_SLUG: 'workspace-1',
+      MULTICA_RUNTIME_NAME: 'Agent (zylos)',
+    });
+    const result = run('hooks/configure.js', [], { env: { ...process.env, HOME: home }, input });
+    assert.equal(result.status, 1, `configure must reject ${baseUrl}`);
+    assert.match(result.stderr, pattern);
+    assert.ok(
+      !fs.existsSync(path.join(home, 'zylos/components/multica/config.json')),
+      'a rejected config must not be written',
+    );
+  }
+
+  // The loopback development endpoint stays configurable, normalized like runtime.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-config-'));
+  const input = JSON.stringify({
+    MULTICA_BASE_URL: 'http://127.0.0.1:3000/',
+    MULTICA_PAT: 'pat-value',
+    MULTICA_WORKSPACE_SLUG: 'workspace-1',
+    MULTICA_RUNTIME_NAME: 'Agent (zylos)',
+  });
+  const result = run('hooks/configure.js', [], { env: { ...process.env, HOME: home }, input });
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(fs.readFileSync(path.join(home, 'zylos/components/multica/config.json'), 'utf8'));
+  assert.equal(config.base_url, 'http://127.0.0.1:3000');
+});
+
+test('post-upgrade defers the slug migration instead of sending the PAT to a cleartext remote', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-upgrade-'));
+  const dataDir = path.join(home, 'zylos/components/multica');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const configPath = path.join(dataDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    base_url: 'http://multica.example',
+    pat: 'pat-value',
+    workspace_id: 'workspace-uuid-1',
+    daemon_id: 'daemon-1',
+    runtime: { name: 'Agent (zylos)' },
+  }));
+  const result = run('hooks/post-upgrade.js', [], { env: { ...process.env, HOME: home } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout + result.stderr, /migration deferred \(base_url must use https for non-loopback/);
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(config.workspace_id, 'workspace-uuid-1', 'config stays unmigrated for retry after reconfiguration');
+});

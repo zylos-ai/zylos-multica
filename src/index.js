@@ -36,35 +36,40 @@ function runNodeScript(script, args, timeout = 20_000) {
   });
 }
 
-function validateSchedulerRows(rows) {
+// Row-level contract check. Rows are validated and quarantined independently:
+// one malformed record (from any channel) must never suppress reconciliation
+// of the valid rows around it, so this returns a verdict instead of throwing.
+function schedulerRowProblem(row) {
+  if (!row || typeof row !== 'object') return 'not an object';
+  if (REQUIRED_SCHEDULER_FIELDS.some((field) => !Object.hasOwn(row, field))) {
+    return `missing one of: ${REQUIRED_SCHEDULER_FIELDS.join(', ')}`;
+  }
+  const nullableStringFieldsValid = ['last_error', 'reply_channel', 'reply_endpoint']
+    .every((field) => row[field] === null || typeof row[field] === 'string');
+  if (typeof row.id !== 'string' || typeof row.type !== 'string'
+    || typeof row.status !== 'string' || !nullableStringFieldsValid
+    || !Number.isFinite(row.next_run_at)) {
+    return 'invalid task row field types';
+  }
+  if (row.type === 'one-time' && row.reply_channel === 'multica'
+    && (typeof row.reply_endpoint !== 'string' || row.reply_endpoint.length === 0)) {
+    return 'Multica row has no reply_endpoint';
+  }
+  return null;
+}
+
+export function selectLatestMulticaSchedulerRows(rows, onInvalidRow = () => {}) {
   if (!Array.isArray(rows)) {
     throw new Error('Scheduler list contract mismatch: expected a JSON array');
   }
-  for (const row of rows) {
-    if (!row || typeof row !== 'object'
-      || REQUIRED_SCHEDULER_FIELDS.some((field) => !Object.hasOwn(row, field))) {
-      throw new Error(
-        `Scheduler list contract mismatch: expected fields ${REQUIRED_SCHEDULER_FIELDS.join(', ')}`,
-      );
-    }
-    const nullableStringFieldsValid = ['last_error', 'reply_channel', 'reply_endpoint']
-      .every((field) => row[field] === null || typeof row[field] === 'string');
-    if (typeof row.id !== 'string' || typeof row.type !== 'string'
-      || typeof row.status !== 'string' || !nullableStringFieldsValid
-      || !Number.isFinite(row.next_run_at)) {
-      throw new Error('Scheduler list contract mismatch: invalid task row field types');
-    }
-  }
-  return rows;
-}
-
-export function selectLatestMulticaSchedulerRows(rows) {
   const latestByTask = new Map();
-  for (const row of validateSchedulerRows(rows)) {
-    if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
-    if (typeof row.reply_endpoint !== 'string' || row.reply_endpoint.length === 0) {
-      throw new Error('Scheduler list contract mismatch: Multica row has no reply_endpoint');
+  for (const row of rows) {
+    const problem = schedulerRowProblem(row);
+    if (problem) {
+      onInvalidRow(row, problem);
+      continue;
     }
+    if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
     const current = latestByTask.get(row.reply_endpoint);
     const isNewer = !current || row.next_run_at > current.next_run_at;
     const saferTie = current && row.next_run_at === current.next_run_at
@@ -170,7 +175,12 @@ export function createBridge(initialConfig, dependencies = {}) {
     } catch {
       throw new Error('Scheduler list contract mismatch: output was not valid JSON');
     }
-    return selectLatestMulticaSchedulerRows(rows);
+    return selectLatestMulticaSchedulerRows(rows, (row, problem) => {
+      log('WARN', 'scheduler row quarantined during reconciliation', {
+        problem,
+        scheduler_task_id: typeof row?.id === 'string' ? row.id.slice(0, 100) : undefined,
+      });
+    });
   }
 
   async function reconcileScheduledTasks() {

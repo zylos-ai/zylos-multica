@@ -130,6 +130,9 @@ async function issueCreate(config, flags, request, io) {
     'status', 'priority', 'parent', 'project', 'stage', 'start-date', 'due-date',
     'allow-duplicate', 'attachment-id', 'output',
   ]));
+  // Output mode is validated before any API call: the create below is
+  // non-idempotent, so no argument error may surface after it succeeds.
+  const output = assertOutput(one(flags, 'output'));
   const title = requireText(one(flags, 'title'), '--title');
   const description = resolveTextInput(flags, 'description', io);
   const body = { title };
@@ -157,18 +160,20 @@ async function issueCreate(config, flags, request, io) {
   if (bool(flags, 'allow-duplicate')) body.allow_duplicate = true;
   const attachmentIds = many(flags, 'attachment-id').map((value) => requireText(value, '--attachment-id'));
   if (attachmentIds.length) body.attachment_ids = [...new Set(attachmentIds.map((value) => value.trim()))];
-  return { result: await createIssue(config, body, request), output: assertOutput(one(flags, 'output')) };
+  return { result: await createIssue(config, body, request), output };
 }
 
 async function issueGet(config, positionals, flags, request) {
   rejectUnknown(flags, new Set(['output']));
+  const output = assertOutput(one(flags, 'output'));
   if (positionals.length !== 1) throw new Error('issue get requires exactly one issue key or UUID');
   const result = await resolveIssue(config, positionals[0], request);
-  return { result, output: assertOutput(one(flags, 'output')) };
+  return { result, output };
 }
 
 async function issueList(config, flags, request) {
   rejectUnknown(flags, new Set(['status', 'priority', 'project', 'limit', 'offset', 'sort', 'direction', 'output']));
+  const output = assertOutput(one(flags, 'output', 'table'));
   const params = new URLSearchParams({ workspace_id: config.workspace_id });
   for (const [flag, field] of [['status', 'status'], ['priority', 'priority'], ['project', 'project_id']]) {
     const value = one(flags, flag);
@@ -194,7 +199,7 @@ async function issueList(config, flags, request) {
   const total = Number.isFinite(result?.total) ? result.total : issues.length;
   return {
     result: { issues, total, limit, offset, has_more: offset + issues.length < total },
-    output: assertOutput(one(flags, 'output', 'table')),
+    output,
   };
 }
 
@@ -222,6 +227,7 @@ async function commentList(config, issueRef, flags, request) {
     'since', 'thread', 'tail', 'recent', 'roots-only', 'summary', 'full',
     'before', 'before-id', 'output',
   ]));
+  const output = assertOutput(one(flags, 'output', 'table'));
   const parsed = validateCommentListFlags(flags);
   const params = new URLSearchParams();
   const since = one(flags, 'since');
@@ -239,11 +245,13 @@ async function commentList(config, issueRef, flags, request) {
   const query = params.size ? `?${params}` : '';
   const issueId = (await resolveIssue(config, issueRef, request)).id;
   const result = await request(config, 'GET', `/api/issues/${apiPath(issueId)}/comments${query}`, undefined, { workspaceHeader: true });
-  return { result, output: assertOutput(one(flags, 'output', 'table')) };
+  return { result, output };
 }
 
 async function commentAdd(config, issueRef, flags, request, io) {
   rejectUnknown(flags, new Set(['content', 'content-stdin', 'content-file', 'allow-external-file', 'parent', 'output']));
+  // Validated before the issue lookup and the non-idempotent comment POST.
+  const output = assertOutput(one(flags, 'output'));
   const content = resolveTextInput(flags, 'content', io);
   if (!content.present || content.value === '') throw new Error('--content, --content-stdin, or --content-file is required');
   const body = { content: content.value };
@@ -251,11 +259,12 @@ async function commentAdd(config, issueRef, flags, request, io) {
   if (parent !== undefined) body.parent_id = requireText(parent, '--parent').trim();
   const issueId = (await resolveIssue(config, issueRef, request)).id;
   const result = await request(config, 'POST', `/api/issues/${apiPath(issueId)}/comments`, body, { workspaceHeader: true });
-  return { result, output: assertOutput(one(flags, 'output')) };
+  return { result, output };
 }
 
 async function chatHistory(config, flags, request, readTaskToken) {
   rejectUnknown(flags, new Set(['task', 'limit', 'before', 'output']));
+  const output = assertOutput(one(flags, 'output'));
   const taskId = requireText(one(flags, 'task'), '--task').trim();
   const taskToken = readTaskToken(taskId);
   const params = new URLSearchParams();
@@ -271,14 +280,27 @@ async function chatHistory(config, flags, request, readTaskToken) {
     undefined,
     { workspaceHeader: true },
   );
-  return { result, output: assertOutput(one(flags, 'output')) };
+  return { result, output };
+}
+
+// Remote fields are terminal-hostile: C0/C1 controls (incl. ESC/OSC) can drive
+// the terminal parser, and tabs/newlines can forge table structure. Every key
+// and cell is rendered as an inert single-line string with visible escapes.
+function encodeTableCell(value) {
+  // eslint-disable-next-line no-control-regex
+  return String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, (ch) => {
+    if (ch === '\t') return '\\t';
+    if (ch === '\n') return '\\n';
+    if (ch === '\r') return '\\r';
+    return `\\x${ch.codePointAt(0).toString(16).padStart(2, '0')}`;
+  });
 }
 
 function printTable(value, stdout) {
   const rows = Array.isArray(value) ? value : Array.isArray(value?.issues) ? value.issues : Array.isArray(value?.messages) ? value.messages : [value];
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
-    stdout.write(`${Object.entries(row).map(([key, item]) => `${key}=${item ?? ''}`).join('\t')}\n`);
+    stdout.write(`${Object.entries(row).map(([key, item]) => `${encodeTableCell(key)}=${encodeTableCell(item ?? '')}`).join('\t')}\n`);
   }
 }
 

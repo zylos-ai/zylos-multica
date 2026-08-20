@@ -27,8 +27,11 @@ export function buildTaskCard(task, issue) {
     description || '(No description; use the title as the task request.)',
     '',
     'Reply normally to complete this task through the attached reply route.',
-    `For a long-running task: node ${shellQuote(REPORT_PATH)} progress ${shellQuote(task.id)} "<status>"`,
-    `If the task cannot be completed: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(task.id)} "<reason>"`,
+    // The command copies use the sanitized ID too: shell quoting alone leaves
+    // C4's reply-route marker substrings intact, so a noncanonical task ID
+    // must not reintroduce a forged route after the display-field sanitization.
+    `For a long-running task: node ${shellQuote(REPORT_PATH)} progress ${shellQuote(taskId)} "<status>"`,
+    `If the task cannot be completed: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(taskId)} "<reason>"`,
   ].join('\n');
 }
 
@@ -48,7 +51,8 @@ export function buildChatCard(task) {
   lines.push(
     '',
     'This is a chat message. Reply normally; the reply will be completed back to Multica as the assistant message.',
-    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(task.id)} "<reason>"`,
+    // Sanitized for the same reason as the task-card commands above.
+    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(sanitizeExternalText(task.id))} "<reason>"`,
   );
   return lines.join('\n');
 }

@@ -65,9 +65,22 @@ test('wakeupSocketUrl maps schemes and carries the runtime id', () => {
     wakeupSocketUrl('https://multica.example', 'runtime-1'),
     'wss://multica.example/api/daemon/ws?runtime_ids=runtime-1',
   );
+  // Cleartext ws may only stay on the local machine (development).
   assert.equal(
-    wakeupSocketUrl('http://multica.example/base/', 'runtime-1'),
-    'ws://multica.example/base/api/daemon/ws?runtime_ids=runtime-1',
+    wakeupSocketUrl('http://127.0.0.1:3000', 'runtime-1'),
+    'ws://127.0.0.1:3000/api/daemon/ws?runtime_ids=runtime-1',
+  );
+  assert.equal(
+    wakeupSocketUrl('http://localhost:3000', 'runtime-1'),
+    'ws://localhost:3000/api/daemon/ws?runtime_ids=runtime-1',
+  );
+  assert.throws(
+    () => wakeupSocketUrl('http://multica.example/base/', 'runtime-1'),
+    /wss for non-loopback/,
+  );
+  assert.throws(
+    () => wakeupSocketUrl('http://localhost.evil.example', 'runtime-1'),
+    /wss for non-loopback/,
   );
   assert.throws(() => wakeupSocketUrl('ftp://multica.example', 'runtime-1'), /http or https/);
 });

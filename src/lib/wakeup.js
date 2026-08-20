@@ -19,6 +19,8 @@
  * itself unsupported and the bridge stays poll-only.
  */
 
+import { isLoopbackHostname } from './config.js';
+
 const WAKEUP_EVENTS = new Set(['daemon:task_available', 'daemon:pending_work']);
 
 const DEFAULT_TIMINGS = Object.freeze({
@@ -36,6 +38,11 @@ export function wakeupSocketUrl(baseUrl, runtimeId) {
   else if (url.protocol === 'https:') url.protocol = 'wss:';
   else if (!['ws:', 'wss:'].includes(url.protocol)) {
     throw new Error('base_url must use http or https');
+  }
+  // Defense in depth behind validateBaseUrl: the authenticated wakeup
+  // handshake must never ride cleartext ws: off the local machine.
+  if (url.protocol === 'ws:' && !isLoopbackHostname(url.hostname)) {
+    throw new Error('wakeup channel requires wss for non-loopback hosts');
   }
   url.searchParams.set('runtime_ids', String(runtimeId));
   return url.toString();

@@ -479,35 +479,43 @@ test('an incompatible scheduler list contract warns without blocking claim', asy
   assert.equal(claimCount, 2);
 });
 
-test('scheduler reconciliation fails loudly on an incompatible JSON contract', async () => {
-  const bridge = createBridge(config, {
-    createWakeupChannel: () => noWakeup,
-    runScript: async () => ({ ok: true, stderr: '', stdout: '[{"id":"incomplete"}]' }),
+test('scheduler reconciliation quarantines malformed rows without suppressing valid ones', async () => {
+  const validRow = (suffix) => ({
+    id: `scheduler-${suffix}`,
+    type: 'one-time',
+    status: 'failed',
+    last_error: 'boom',
+    reply_channel: 'multica',
+    reply_endpoint: `task-${suffix}`,
+    next_run_at: 100,
   });
-  await assert.rejects(
-    bridge.listScheduledTasks(),
-    /Scheduler list contract mismatch: expected fields/,
-  );
-
-  const invalidTypeBridge = createBridge(config, {
+  // Malformed rows sit both before and after the valid ones: quarantine must
+  // be per-row, so neither position may abort the batch.
+  const bridge = createBridge(config, {
     createWakeupChannel: () => noWakeup,
     runScript: async () => ({
       ok: true,
       stderr: '',
-      stdout: JSON.stringify([{
-        id: 'scheduler-1',
-        type: 'one-time',
-        status: 'failed',
-        last_error: 500,
-        reply_channel: 'multica',
-        reply_endpoint: 'task-1',
-        next_run_at: 100,
-      }]),
+      stdout: JSON.stringify([
+        { id: 'incomplete' },
+        validRow('a'),
+        { ...validRow('bad-types'), last_error: 500 },
+        { ...validRow('other-channel'), reply_channel: 'telegram', reply_endpoint: null },
+        validRow('b'),
+      ]),
     }),
   });
+  const rows = await bridge.listScheduledTasks();
+  assert.deepEqual(rows.map((row) => row.reply_endpoint).sort(), ['task-a', 'task-b']);
+
+  // A response that is not an array at all is still a hard contract break.
+  const nonArrayBridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
+    runScript: async () => ({ ok: true, stderr: '', stdout: '{"rows":[]}' }),
+  });
   await assert.rejects(
-    invalidTypeBridge.listScheduledTasks(),
-    /Scheduler list contract mismatch: invalid task row field types/,
+    nonArrayBridge.listScheduledTasks(),
+    /Scheduler list contract mismatch: expected a JSON array/,
   );
 });
 
