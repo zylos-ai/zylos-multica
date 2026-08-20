@@ -46,4 +46,5 @@
 
 - 开发 = Jinglever，CR = Luna（crew 标准：finding 必须引源码行，证据独立重放）。评审载体走 OpenMax Issue/Blueprint。
 - 发版硬门：solution §10 验收通过 + Howard 明确 go。CHANGELOG 在发版 PR 中由 `[Unreleased]` 切版本号。
+- 发版 PR 必须同 commit 更新四个文件（zylos-component-template CLAUDE.md "Release Process" 的仓库本地化，v0.3.0 漏执行教训）：①`package.json` bump version；②`package-lock.json` 随后 `npm install` 同步；③`SKILL.md` frontmatter `version` 对齐（core 以此登记与判断升级，漏 bump 导致重复升级提示）；④CHANGELOG 由 `[Unreleased]` 切版。`UPSTREAM_VERSION` 是独立协议能力值，只在对齐新官方契约时才动。
 - 卡片中一切 Multica 来源文本必须过 route-marker 消毒（solution §4.4）。

@@ -71,10 +71,12 @@ absent or null. A server version, when present, is diagnostic only.
 
 ## Configuration
 
-Required fields are `base_url`, `pat`, `workspace_id`, `daemon_id`, and
-`runtime.name`. `poll_interval_s` defaults to 15 and is constrained to 1–300.
-The configure and migration hooks use temp-file-plus-rename writes and enforce
-mode 0600.
+Required fields are `base_url`, `pat`, `workspace_slug`, `daemon_id`, and
+`runtime.name`. The slug is resolved to the workspace UUID at startup via
+`GET /api/workspaces`; a legacy `workspace_id` config is rewritten in place by
+the post-install/post-upgrade hooks or by the daemon on startup.
+`poll_interval_s` defaults to 15 and is constrained to 1–300. The configure
+and migration hooks use temp-file-plus-rename writes and enforce mode 0600.
 
 ## Due-date reconciliation
 

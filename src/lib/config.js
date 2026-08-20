@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { UPSTREAM_VERSION } from './upstream-version.js';
+import { WORKSPACE_SLUG_PATTERN } from './workspace.js';
 
 export const DATA_DIR = path.join(os.homedir(), 'zylos/components/multica');
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
@@ -25,6 +26,38 @@ function requireString(value, field) {
   return value.trim();
 }
 
+// Loopback is the only place cleartext http/ws may carry the PAT (development).
+export function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+// Single validator for every credential-bearing endpoint: runtime config,
+// configure hook, slug migration, and (defensively) the wakeup WebSocket all
+// route through this contract — origin-only https, with cleartext allowed
+// only on loopback.
+export function validateBaseUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('base_url must be a valid http(s) URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('base_url must use http or https');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('base_url must not contain embedded credentials');
+  }
+  if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') {
+    throw new Error('base_url must be origin-only (no path, query, or fragment)');
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackHostname(parsed.hostname)) {
+    throw new Error('base_url must use https for non-loopback hosts (http is only allowed for loopback development endpoints)');
+  }
+  return parsed;
+}
+
 export function normalizeConfig(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') {
     throw new Error('Config must be a JSON object');
@@ -33,21 +66,25 @@ export function normalizeConfig(input) {
   const config = { ...DEFAULT_CONFIG, ...input };
   config.base_url = requireString(config.base_url, 'base_url').replace(/\/+$/, '');
   config.pat = requireString(config.pat, 'pat');
-  config.workspace_id = requireString(config.workspace_id, 'workspace_id');
+  const slug = typeof config.workspace_slug === 'string' ? config.workspace_slug.trim() : '';
+  const legacyId = typeof config.workspace_id === 'string' ? config.workspace_id.trim() : '';
+  if (slug) {
+    if (!WORKSPACE_SLUG_PATTERN.test(slug)) {
+      throw new Error('workspace_slug must match ^[a-z0-9]+(-[a-z0-9]+)*$ (the slug shown in the workspace URL)');
+    }
+    config.workspace_slug = slug;
+    // The UUID is resolved from the slug at runtime; any stored value is stale.
+    delete config.workspace_id;
+  } else if (legacyId) {
+    // Pre-slug config: keep the UUID so the daemon can migrate it in place.
+    config.workspace_id = legacyId;
+    delete config.workspace_slug;
+  } else {
+    throw new Error('Missing required config field: workspace_slug');
+  }
   config.daemon_id = requireString(config.daemon_id, 'daemon_id');
 
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(config.base_url);
-  } catch {
-    throw new Error('base_url must be a valid http(s) URL');
-  }
-  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-    throw new Error('base_url must use http or https');
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    throw new Error('base_url must not contain embedded credentials');
-  }
+  validateBaseUrl(config.base_url);
 
   const pollInterval = Number(config.poll_interval_s);
   if (!Number.isFinite(pollInterval) || pollInterval < 1 || pollInterval > 300) {
@@ -93,6 +130,13 @@ export function writeConfigAtomic(value, configPath = CONFIG_PATH) {
     try { fs.unlinkSync(tempPath); } catch {}
     throw error;
   }
+}
+
+export function persistWorkspaceSlugMigration(slug, configPath = CONFIG_PATH) {
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  raw.workspace_slug = slug;
+  delete raw.workspace_id;
+  writeConfigAtomic(raw, configPath);
 }
 
 export function watchConfig(onChange) {

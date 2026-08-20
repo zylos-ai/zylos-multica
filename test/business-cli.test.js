@@ -10,6 +10,7 @@ import { runBusinessCLI } from '../src/lib/business-cli.js';
 const config = {
   base_url: 'https://multica.example',
   pat: 'secret',
+  workspace_slug: 'workspace-1',
   workspace_id: 'workspace-1',
 };
 
@@ -138,4 +139,86 @@ test('chat history requires a task and uses only its scoped token', async () => 
     runBusinessCLI(config, ['chat', 'history'], h.dependencies),
     /--task is required/,
   );
+});
+
+
+test('an invalid --output fails before any API call on every command', async () => {
+  const argvCases = [
+    // Mutating commands: a late argument error after the POST would strand a
+    // completed side effect behind a FAILED exit (duplicate-on-retry).
+    ['issue', 'create', '--title', 'Title', '--output', 'yaml'],
+    ['issue', 'create', '--title', 'Title', '--output'],
+    ['issue', 'create', '--title', 'Title', '--output', 'json', '--output', 'json'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output', 'yaml'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output'],
+    // Read commands share the same validate-before-request invariant.
+    ['issue', 'get', 'PROJ-1', '--output', 'yaml'],
+    ['issue', 'list', '--output', 'yaml'],
+    ['issue', 'comment', 'list', 'PROJ-1', '--output', 'yaml'],
+  ];
+  for (const argv of argvCases) {
+    const h = harness({ id: 'issue-1' });
+    await assert.rejects(runBusinessCLI(config, argv, h.dependencies), /--output/);
+    assert.equal(h.calls.length, 0, `no request may precede --output validation for: ${argv.join(' ')}`);
+  }
+
+  const chat = harness({ messages: [] });
+  chat.dependencies.loadTaskToken = () => 'task-token';
+  await assert.rejects(
+    runBusinessCLI(config, ['chat', 'history', '--task', 'task-1', '--output', 'yaml'], chat.dependencies),
+    /--output/,
+  );
+  assert.equal(chat.calls.length, 0);
+});
+
+test('table output renders remote control characters as inert single-line escapes', async () => {
+  const h = harness({
+    issues: [{
+      id: 'issue-1',
+      title: 'evil\u001b]0;pwned\u0007\tcol\r\nforged=row',
+    }],
+    total: 1,
+  });
+  await runBusinessCLI(config, ['issue', 'list', '--output', 'table'], h.dependencies);
+  const body = h.output();
+  const lines = body.trimEnd().split('\n');
+  assert.equal(lines.length, 1, 'one record renders exactly one line');
+  assert.match(lines[0], /evil\\x1b\]0;pwned\\x07\\tcol\\r\\nforged=row/);
+  // No raw C0/C1 byte survives except the structural field-separator tabs
+  // and the record-terminating newline.
+  // eslint-disable-next-line no-control-regex
+  assert.doesNotMatch(body.replaceAll('\t', '').replaceAll('\n', ''), /[\u0000-\u001f\u007f-\u009f]/);
+  assert.ok(lines[0].split('\t').length >= 2, 'structural field separators are preserved');
+
+  const hJson = harness({ issues: [{ id: 'issue-1', title: 'plain' }], total: 1 });
+  await runBusinessCLI(config, ['issue', 'list', '--output', 'json'], hJson.dependencies);
+  assert.ok(JSON.parse(hJson.output()), 'json output stays structurally valid');
+});
+
+test('slug-only config: invalid --output rejects with zero requests, before workspace resolution', async () => {
+  // A slug-only config (no cached workspace_id) makes workspace resolution a
+  // real GET /api/workspaces — the production first request. Reviewer finding
+  // (review of 21e0c75): the previous fixture preloaded both slug and id, so
+  // the early return hid that this GET ran before --output validation.
+  const slugOnlyConfig = {
+    base_url: 'https://multica.example',
+    pat: 'secret',
+    workspace_slug: 'workspace-1',
+  };
+  for (const argv of [
+    ['issue', 'create', '--title', 'Title', '--output', 'yaml'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output', 'yaml'],
+  ]) {
+    const h = harness([{ id: 'ws-1', slug: 'workspace-1' }]);
+    await assert.rejects(runBusinessCLI({ ...slugOnlyConfig }, argv, h.dependencies), /--output/);
+    assert.equal(h.calls.length, 0, `zero requests (incl. GET /api/workspaces) for: ${argv.join(' ')}`);
+  }
+
+  // Positive control for the same path: with a valid --output the resolution
+  // GET runs first, proving the fixture exercises the production first request.
+  const ok = harness(({ apiPath }) => (apiPath === '/api/workspaces'
+    ? [{ id: 'ws-1', slug: 'workspace-1' }]
+    : { id: 'issue-1' }));
+  await runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'create', '--title', 'Title', '--output', 'json'], ok.dependencies);
+  assert.equal(ok.calls[0].apiPath, '/api/workspaces', 'slug-only config really resolves the workspace first');
 });

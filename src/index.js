@@ -7,10 +7,12 @@ import path from 'node:path';
 
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
-import { getConfig, stopWatching, watchConfig } from './lib/config.js';
+import { getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
+import { ensureWorkspaceResolved } from './lib/workspace.js';
 import { storeTaskToken } from './lib/task-tokens.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
+import { createWakeupChannel } from './lib/wakeup.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -34,35 +36,40 @@ function runNodeScript(script, args, timeout = 20_000) {
   });
 }
 
-function validateSchedulerRows(rows) {
+// Row-level contract check. Rows are validated and quarantined independently:
+// one malformed record (from any channel) must never suppress reconciliation
+// of the valid rows around it, so this returns a verdict instead of throwing.
+function schedulerRowProblem(row) {
+  if (!row || typeof row !== 'object') return 'not an object';
+  if (REQUIRED_SCHEDULER_FIELDS.some((field) => !Object.hasOwn(row, field))) {
+    return `missing one of: ${REQUIRED_SCHEDULER_FIELDS.join(', ')}`;
+  }
+  const nullableStringFieldsValid = ['last_error', 'reply_channel', 'reply_endpoint']
+    .every((field) => row[field] === null || typeof row[field] === 'string');
+  if (typeof row.id !== 'string' || typeof row.type !== 'string'
+    || typeof row.status !== 'string' || !nullableStringFieldsValid
+    || !Number.isFinite(row.next_run_at)) {
+    return 'invalid task row field types';
+  }
+  if (row.type === 'one-time' && row.reply_channel === 'multica'
+    && (typeof row.reply_endpoint !== 'string' || row.reply_endpoint.length === 0)) {
+    return 'Multica row has no reply_endpoint';
+  }
+  return null;
+}
+
+export function selectLatestMulticaSchedulerRows(rows, onInvalidRow = () => {}) {
   if (!Array.isArray(rows)) {
     throw new Error('Scheduler list contract mismatch: expected a JSON array');
   }
-  for (const row of rows) {
-    if (!row || typeof row !== 'object'
-      || REQUIRED_SCHEDULER_FIELDS.some((field) => !Object.hasOwn(row, field))) {
-      throw new Error(
-        `Scheduler list contract mismatch: expected fields ${REQUIRED_SCHEDULER_FIELDS.join(', ')}`,
-      );
-    }
-    const nullableStringFieldsValid = ['last_error', 'reply_channel', 'reply_endpoint']
-      .every((field) => row[field] === null || typeof row[field] === 'string');
-    if (typeof row.id !== 'string' || typeof row.type !== 'string'
-      || typeof row.status !== 'string' || !nullableStringFieldsValid
-      || !Number.isFinite(row.next_run_at)) {
-      throw new Error('Scheduler list contract mismatch: invalid task row field types');
-    }
-  }
-  return rows;
-}
-
-export function selectLatestMulticaSchedulerRows(rows) {
   const latestByTask = new Map();
-  for (const row of validateSchedulerRows(rows)) {
-    if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
-    if (typeof row.reply_endpoint !== 'string' || row.reply_endpoint.length === 0) {
-      throw new Error('Scheduler list contract mismatch: Multica row has no reply_endpoint');
+  for (const row of rows) {
+    const problem = schedulerRowProblem(row);
+    if (problem) {
+      onInvalidRow(row, problem);
+      continue;
     }
+    if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
     const current = latestByTask.get(row.reply_endpoint);
     const isNewer = !current || row.next_run_at > current.next_run_at;
     const saferTie = current && row.next_run_at === current.next_run_at
@@ -94,10 +101,21 @@ export function createBridge(initialConfig, dependencies = {}) {
   let backoffIndex = -1;
   let stopped = false;
   let wakeSleep;
+  let pendingWakeup = false;
+  let wakeupKey;
   const request = dependencies.request ?? multicaRequest;
+  const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
+  const persistMigration = dependencies.persistWorkspaceSlugMigration ?? persistWorkspaceSlugMigration;
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
   const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
+  const wakeup = (dependencies.createWakeupChannel ?? createWakeupChannel)({
+    log,
+    onWakeup: () => {
+      pendingWakeup = true;
+      if (backoffIndex < 0) wakeSleep?.();
+    },
+  });
 
   async function register() {
     const response = await request(config, 'POST', '/api/daemon/register', {
@@ -157,7 +175,12 @@ export function createBridge(initialConfig, dependencies = {}) {
     } catch {
       throw new Error('Scheduler list contract mismatch: output was not valid JSON');
     }
-    return selectLatestMulticaSchedulerRows(rows);
+    return selectLatestMulticaSchedulerRows(rows, (row, problem) => {
+      log('WARN', 'scheduler row quarantined during reconciliation', {
+        problem,
+        scheduler_task_id: typeof row?.id === 'string' ? row.id.slice(0, 100) : undefined,
+      });
+    });
   }
 
   async function reconcileScheduledTasks() {
@@ -333,8 +356,35 @@ export function createBridge(initialConfig, dependencies = {}) {
     return true;
   }
 
+  async function ensureWorkspace() {
+    if (config.workspace_slug && config.workspace_id) return;
+    const migrating = !config.workspace_slug && Boolean(config.workspace_id);
+    await resolveWorkspace(config, {
+      request,
+      onMigrated: (workspace) => {
+        persistMigration(workspace.slug);
+        log('INFO', 'workspace_id config migrated to workspace_slug', { workspace_slug: workspace.slug });
+      },
+    });
+    if (!migrating) {
+      log('INFO', 'workspace resolved', {
+        workspace_slug: config.workspace_slug,
+        workspace_id: config.workspace_id,
+      });
+    }
+  }
+
   async function tick() {
+    await ensureWorkspace();
     if (!runtimeId) await register();
+    // (Re)attach the wakeup websocket whenever the registered identity it
+    // serves has changed; a plain reconnect after a drop is the channel's
+    // own job, not tick's.
+    const nextWakeupKey = `${config.base_url}|${runtimeId}`;
+    if (nextWakeupKey !== wakeupKey) {
+      wakeupKey = nextWakeupKey;
+      wakeup.start(config, runtimeId);
+    }
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
     await reconcileScheduledTasks();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
@@ -351,10 +401,15 @@ export function createBridge(initialConfig, dependencies = {}) {
   function updateConfig(nextConfig) {
     config = nextConfig;
     runtimeId = undefined;
+    // The socket may authenticate against stale credentials; drop it now and
+    // let the next successful register re-attach it under the new identity.
+    wakeupKey = undefined;
+    wakeup.stop();
   }
 
   function stop() {
     stopped = true;
+    wakeup.stop();
     wakeSleep?.();
   }
 
@@ -388,7 +443,11 @@ export function createBridge(initialConfig, dependencies = {}) {
       }
       if (stopped) break;
       const seconds = backoffIndex >= 0 ? BACKOFF_STEPS_S[backoffIndex] : config.poll_interval_s;
-      await sleep(seconds * 1000);
+      // A wakeup hint skips the idle wait but never shortens error backoff:
+      // the hint only proves the websocket is alive, not that the failing
+      // HTTP path has recovered.
+      if (backoffIndex >= 0 || !pendingWakeup) await sleep(seconds * 1000);
+      pendingWakeup = false;
     }
   }
 

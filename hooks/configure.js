@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { validateBaseUrl } from '../src/lib/config.js';
+
 const CONFIG_PATH = path.join(os.homedir(), 'zylos/components/multica/config.json');
 const DEFAULTS = { enabled: true, poll_interval_s: 15 };
 
@@ -46,7 +48,7 @@ try {
   const mappings = {
     MULTICA_BASE_URL: 'base_url',
     MULTICA_PAT: 'pat',
-    MULTICA_WORKSPACE_ID: 'workspace_id',
+    MULTICA_WORKSPACE_SLUG: 'workspace_slug',
     MULTICA_DAEMON_ID: 'daemon_id',
     MULTICA_POLL_INTERVAL_S: 'poll_interval_s',
   };
@@ -60,17 +62,25 @@ try {
   for (const [field, value] of [
     ['base_url', config.base_url],
     ['pat', config.pat],
-    ['workspace_id', config.workspace_id],
     ['runtime.name', config.runtime?.name],
   ]) {
     if (typeof value !== 'string' || value.trim() === '') {
       throw new Error(`Missing required configuration: ${field}`);
     }
   }
-  const baseUrl = new URL(config.base_url);
-  if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
-    throw new Error('base_url must be an http(s) URL without embedded credentials');
+  const slug = typeof config.workspace_slug === 'string' ? config.workspace_slug.trim() : '';
+  const legacyId = typeof config.workspace_id === 'string' ? config.workspace_id.trim() : '';
+  if (slug) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+      throw new Error('workspace_slug must match ^[a-z0-9]+(-[a-z0-9]+)*$ (the slug shown in the workspace URL)');
+    }
+    config.workspace_slug = slug;
+    delete config.workspace_id;
+  } else if (!legacyId) {
+    throw new Error('Missing required configuration: workspace_slug');
   }
+  config.base_url = String(config.base_url).trim().replace(/\/+$/, '');
+  validateBaseUrl(config.base_url);
   const pollInterval = Number(config.poll_interval_s);
   if (!Number.isFinite(pollInterval) || pollInterval < 1 || pollInterval > 300) {
     throw new Error('poll_interval_s must be between 1 and 300');

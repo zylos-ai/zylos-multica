@@ -48,7 +48,7 @@ logs a warning because `scheduler list --json` is not supported.
 zylos add zylos-ai/zylos-multica
 ```
 
-The installer collects the Multica base URL, PAT, workspace ID, and runtime
+The installer collects the Multica base URL, PAT, workspace slug, and runtime
 display name. It generates a stable daemon ID unless an existing ID is supplied
 during migration.
 
@@ -115,7 +115,7 @@ Runtime configuration is stored at `~/zylos/components/multica/config.json`:
   "enabled": true,
   "base_url": "https://multica.example.com",
   "pat": "stored-locally",
-  "workspace_id": "workspace-uuid",
+  "workspace_slug": "my-workspace",
   "daemon_id": "stable-daemon-uuid",
   "poll_interval_s": 15,
   "runtime": {
@@ -123,6 +123,13 @@ Runtime configuration is stored at `~/zylos/components/multica/config.json`:
   }
 }
 ```
+
+`workspace_slug` is the slug shown in the workspace's web URL. The bridge
+resolves it to the workspace UUID at startup through `GET /api/workspaces`
+with the component PAT; an unknown slug fails fast with the account's
+available slugs listed. A pre-slug config that still stores `workspace_id`
+keeps working: post-install rewrites it to the slug form when the server is
+reachable, and the daemon performs the same migration on startup otherwise.
 
 To disable the component, stop its managed process with `pm2 stop zylos-multica`.
 Changing `enabled` to `false` by itself makes the process exit, so a PM2 process
@@ -193,8 +200,27 @@ escapes) unless `--allow-external-file` is explicitly passed.
 
 Stop `zylos-multica-bridge` before starting this component so two processes do
 not claim from the same runtime. Install with the same base URL, PAT, workspace
-ID, and daemon ID; registration is idempotent. Keep the old bridge stopped until
-the live issue and chat checks pass.
+slug, and daemon ID; registration is idempotent. Keep the old bridge stopped
+until the live issue and chat checks pass.
+
+## Delivery latency
+
+The bridge adopts the official daemon's wakeup WebSocket. After
+registration it holds a wakeup WebSocket to `GET /api/daemon/ws`
+(PAT-authenticated); when the server pushes a `daemon:task_available` or
+`daemon:pending_work` hint, the poll loop wakes immediately and claims over
+the existing HTTP claim path, so delivery is near-instant while claiming
+semantics are unchanged. (The official daemon can additionally negotiate a
+`tasks.claim` RPC over this socket; the bridge deliberately keeps claiming
+on HTTP — a supported official fallback — to avoid the double-claim race
+surface that WS-first claiming has to manage.) The `poll_interval_s` loop keeps running as the
+fallback delivery path: if the socket drops, the bridge reconnects with
+jittered exponential backoff (1s → 30s, reset after 10s of stable
+connection) and polling covers the gap. A silent socket is recycled after
+60s without frames. Wakeup hints never shorten error backoff.
+
+The wakeup socket needs the global `WebSocket` client (Node 22+). On older
+Node runtimes the bridge logs one warning and stays poll-only.
 
 ## Operations
 
