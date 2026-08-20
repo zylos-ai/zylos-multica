@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-20
+
+Security release: fixes 6 of the 9 findings from the 2026-08-20 full security
+scan of `main@501ec25` (44/44 files, 1 Medium / 8 Low). The remaining 3
+findings are explicitly deferred with tracking issues: #17 (poison task
+content), #18 (scheduler task-source binding), #19 (attachment preflight).
+
+### Security
+
+- Enforce `https`/`wss` for non-loopback server URLs so PATs and task tokens
+  are never sent in cleartext over the network; loopback addresses may keep
+  plain `http`/`ws` for local development. (Medium, finding #1)
+- Tighten the wakeup WebSocket to origin-only: connection URLs are rebuilt
+  from the configured origin instead of trusting server-provided values.
+  (finding #4)
+- Validate `--output` before any API call: pre-dispatch validation in
+  `runBusinessCLI` runs ahead of workspace resolution, so an invalid value
+  fails with zero requests even in slug-only configurations; command-level
+  validation is retained as defense in depth. (finding #3, hardened after
+  exact-head re-review found the slug-only `GET /api/workspaces` gap)
+- Quarantine scheduler failures per task row so one malformed task cannot
+  stall or poison processing of other tasks. (finding #7)
+- Escape terminal control sequences in table output to prevent
+  escape-sequence injection via platform-sourced text. (finding #8)
+- Sanitize task IDs before embedding them in cards, closing a route-marker
+  injection path for platform-sourced identifiers. (finding #6)
+
 ## [0.3.0] - 2026-08-19
 
 ### Added
