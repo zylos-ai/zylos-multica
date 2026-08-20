@@ -194,3 +194,31 @@ test('table output renders remote control characters as inert single-line escape
   await runBusinessCLI(config, ['issue', 'list', '--output', 'json'], hJson.dependencies);
   assert.ok(JSON.parse(hJson.output()), 'json output stays structurally valid');
 });
+
+test('slug-only config: invalid --output rejects with zero requests, before workspace resolution', async () => {
+  // A slug-only config (no cached workspace_id) makes workspace resolution a
+  // real GET /api/workspaces — the production first request. Reviewer finding
+  // (review of 21e0c75): the previous fixture preloaded both slug and id, so
+  // the early return hid that this GET ran before --output validation.
+  const slugOnlyConfig = {
+    base_url: 'https://multica.example',
+    pat: 'secret',
+    workspace_slug: 'workspace-1',
+  };
+  for (const argv of [
+    ['issue', 'create', '--title', 'Title', '--output', 'yaml'],
+    ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output', 'yaml'],
+  ]) {
+    const h = harness([{ id: 'ws-1', slug: 'workspace-1' }]);
+    await assert.rejects(runBusinessCLI({ ...slugOnlyConfig }, argv, h.dependencies), /--output/);
+    assert.equal(h.calls.length, 0, `zero requests (incl. GET /api/workspaces) for: ${argv.join(' ')}`);
+  }
+
+  // Positive control for the same path: with a valid --output the resolution
+  // GET runs first, proving the fixture exercises the production first request.
+  const ok = harness(({ apiPath }) => (apiPath === '/api/workspaces'
+    ? [{ id: 'ws-1', slug: 'workspace-1' }]
+    : { id: 'issue-1' }));
+  await runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'create', '--title', 'Title', '--output', 'json'], ok.dependencies);
+  assert.equal(ok.calls[0].apiPath, '/api/workspaces', 'slug-only config really resolves the workspace first');
+});

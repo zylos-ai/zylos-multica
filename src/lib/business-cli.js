@@ -314,6 +314,11 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   };
   const { positionals, flags } = parseArgs(argv);
   const [group, command, subcommand, ...rest] = positionals;
+  // --output is pre-validated before dispatch — including before workspace
+  // resolution, which on a slug-only config is itself a network call — so an
+  // argument error can never surface after any API call. Commands still apply
+  // their own default ('json' or 'table') when the flag is absent.
+  if (flags.has('output')) assertOutput(one(flags, 'output'));
   const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
   // chat history authenticates with the task-scoped token, not the PAT.
   if (group === 'issue') await resolveWorkspace(config, { request });
