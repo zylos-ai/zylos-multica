@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Comment-triggered tasks now deliver the triggering comment instead of the
+  issue body. The claim payload's `trigger_comment_*`, `coalesced_comments`
+  and `new_comment_count` fields are rendered as a `[Multica follow-up]` card
+  that leads with the new comment (author-labelled, quoted), lists earlier
+  coalesced comments, points at the full thread, and demotes the issue
+  description to context. First-assignment cards now also carry the
+  assigner's `handoff_note`. All new fields pass through the reply-route
+  sanitizer. (#21)
+
 ### Documentation
 
 - Add a README "Onboarding a new zylos agent" section covering the verified
