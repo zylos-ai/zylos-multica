@@ -393,7 +393,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       max_tasks: 1,
     });
     for (const task of response?.tasks || []) {
-      log('INFO', 'task claimed', { task_id: task.id, issue_id: task.issue_id });
+      log('INFO', 'task claimed', { task_id: task.id, issue_id: task.issue_id, trigger_comment_id: task.trigger_comment_id || '' });
       await handleTask(task);
     }
   }
