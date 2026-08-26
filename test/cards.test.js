@@ -70,6 +70,8 @@ test('comment-triggered tasks lead with the triggering comment, not the issue bo
   // The comment must come before the issue body so the agent cannot mistake the body for the request.
   assert.ok(card.indexOf('NEW COMMENT') < card.indexOf('Original issue description'));
   assert.match(card, /fail 'task-3'/);
+  // In-thread agent comment: exact command with issue, task and trigger comment ids.
+  assert.match(card, /Comment ID: comment-2\.[^\n]*issue comment add 'ZYLO-13' --task 'task-3' --parent 'comment-2' --content "<text>"/);
 });
 
 test('comment-triggered card labels agent authors and survives missing optional fields', () => {
@@ -80,6 +82,8 @@ test('comment-triggered card labels agent authors and survives missing optional 
   assert.match(card, /^\[Multica follow-up\] \(untitled\)/);
   assert.match(card, /Another agent left a NEW COMMENT/);
   assert.doesNotMatch(card, /earlier comment/);
+  // No issue reference → no in-thread command can be rendered.
+  assert.doesNotMatch(card, /issue comment add/);
   assert.doesNotMatch(card, /other comment\(s\)/);
   assert.doesNotMatch(card, /Original issue description/);
 });
