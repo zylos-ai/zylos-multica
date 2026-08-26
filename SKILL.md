@@ -79,7 +79,7 @@ this component's protected local config (the PAT never appears in argv):
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue create --title "Title" --description "Body"
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
-node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update" --task <task-id>
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
 node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
 ```
@@ -89,7 +89,13 @@ stores its task-scoped token in a private mode-0600 file and removes it after a
 successful `complete` or `fail`; the component PAT is never used for chat
 history.
 
-`issue comment add` writes as the component PAT owner's member actor. On an
-issue assigned to this same agent, that comment can dispatch another comment
-task back to the agent. Do not call it from an automatic same-issue handling
-loop unless the workflow has an explicit trigger/loop guard.
+`issue comment add` requires an explicit actor. `--task <task-id>` (the id is on
+the task card) authenticates the write with that task's stored `mat_` token, the
+same way the official daemon's CLI does inside a task: the server records the
+comment as this agent (`author_type: agent`), and agent-authored comments do
+not re-trigger the issue assignee, so the agent never dispatches a follow-up
+task to itself. Post before completing the task — the token is deleted on
+`complete`/`fail`. `--as-owner` writes as the component PAT owner (a member
+comment); on an issue assigned to this agent that dispatches a comment task
+back to the agent, so use it only when that is intended. There is no silent
+default.

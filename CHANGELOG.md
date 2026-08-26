@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `issue comment add` no longer writes as the component PAT owner by default.
+  `--task <task-id>` authenticates the comment with the task's stored `mat_`
+  token, mirroring the official daemon CLI, so the server attributes it to the
+  agent and does not dispatch a follow-up task back to the agent for its own
+  reply (#24). Writing as the PAT owner is now the explicit `--as-owner`
+  opt-in; omitting both flags is an argument error made before any request.
+
 ## [0.3.2] - 2026-08-25
 
 ### Fixed
