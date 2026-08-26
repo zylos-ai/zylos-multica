@@ -22,7 +22,7 @@ try {
   try {
     removeTaskToken(taskId);
   } catch (error) {
-    console.error(`WARNING: task ${taskId} completed but its local chat token could not be removed: ${error.message}`);
+    console.error(`WARNING: task ${taskId} completed but its local task token could not be removed: ${error.message}`);
   }
   console.log(`OK: task ${taskId} completed`);
 } catch (error) {
