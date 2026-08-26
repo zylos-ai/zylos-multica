@@ -95,7 +95,9 @@ same way the official daemon's CLI does inside a task: the server records the
 comment as this agent (`author_type: agent`), and agent-authored comments do
 not re-trigger the issue assignee, so the agent never dispatches a follow-up
 task to itself. Post before completing the task — the token is deleted on
-`complete`/`fail`. `--as-owner` writes as the component PAT owner (a member
+`complete`/`fail`. In a comment-triggered task the server only accepts an
+in-thread comment, so pass `--parent <trigger-comment-id>` — the follow-up
+card prints the complete command. `--as-owner` writes as the component PAT owner (a member
 comment); on an issue assigned to this agent that dispatches a comment task
 back to the agent, so use it only when that is intended. There is no silent
 default.
