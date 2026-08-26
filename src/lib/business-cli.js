@@ -248,8 +248,8 @@ async function commentList(config, issueRef, flags, request) {
   return { result, output };
 }
 
-async function commentAdd(config, issueRef, flags, request, io) {
-  rejectUnknown(flags, new Set(['content', 'content-stdin', 'content-file', 'allow-external-file', 'parent', 'output']));
+async function commentAdd(config, issueRef, flags, request, io, readTaskToken) {
+  rejectUnknown(flags, new Set(['content', 'content-stdin', 'content-file', 'allow-external-file', 'parent', 'task', 'as-owner', 'output']));
   // Validated before the issue lookup and the non-idempotent comment POST.
   const output = assertOutput(one(flags, 'output'));
   const content = resolveTextInput(flags, 'content', io);
@@ -257,8 +257,32 @@ async function commentAdd(config, issueRef, flags, request, io) {
   const body = { content: content.value };
   const parent = one(flags, 'parent');
   if (parent !== undefined) body.parent_id = requireText(parent, '--parent').trim();
+
+  // Who the comment is written AS. The official daemon runs the agent with a
+  // task-scoped mat_ token and its CLI never falls back to the user's PAT
+  // inside a task ("that silent fallback is how agent writes land as the
+  // wrong actor"). Mirror that: --task authenticates the POST with the stored
+  // task token, so the server binds the comment to this agent (author_type
+  // "agent", source_task_id = the task) and agent-authored comments do not
+  // re-trigger the issue assignee — i.e. this agent does not dispatch a
+  // follow-up task to itself. Writing as the PAT owner is a member comment,
+  // which the server routes back to the assignee; that footgun is opt-in via
+  // --as-owner, never the silent default.
+  const taskFlag = one(flags, 'task');
+  const asOwner = flags.has('as-owner');
+  if (taskFlag !== undefined && asOwner) throw new Error('--task and --as-owner are mutually exclusive');
+  if (taskFlag === undefined && !asOwner) {
+    throw new Error('issue comment add requires --task <task-id> (comment as this agent via its task token; '
+      + 'take the id from the task card) or --as-owner (comment as the PAT owner; on an issue assigned '
+      + 'to this agent that dispatches a follow-up task back to it)');
+  }
+  const authConfig = taskFlag !== undefined
+    ? { ...config, pat: readTaskToken(requireText(taskFlag, '--task').trim()) }
+    : config;
+
+  // Issue lookup is a read; the PAT stays fine for it. Only the write changes actor.
   const issueId = (await resolveIssue(config, issueRef, request)).id;
-  const result = await request(config, 'POST', `/api/issues/${apiPath(issueId)}/comments`, body, { workspaceHeader: true });
+  const result = await request(authConfig, 'POST', `/api/issues/${apiPath(issueId)}/comments`, body, { workspaceHeader: true });
   return { result, output };
 }
 
@@ -328,7 +352,7 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   else if (group === 'issue' && command === 'list' && subcommand === undefined) response = await issueList(config, flags, request);
   else if (group === 'issue' && command === 'comment' && subcommand === 'add') {
     if (rest.length !== 1) throw new Error('issue comment add requires exactly one issue key or UUID');
-    response = await commentAdd(config, rest[0], flags, request, io);
+    response = await commentAdd(config, rest[0], flags, request, io, readTaskToken);
   } else if (group === 'issue' && command === 'comment' && subcommand === 'list') {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);

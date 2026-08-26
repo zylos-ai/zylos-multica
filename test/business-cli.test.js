@@ -99,8 +99,9 @@ test('issue comment add/list implement text decoding and bounded thread paging',
   const h = harness(({ method, apiPath }) => method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
     ? { id: 'issue-8', identifier: 'MUL-8' }
     : []);
+  h.dependencies.loadTaskToken = (taskId) => `mat_token_for_${taskId}`;
   await runBusinessCLI(config, [
-    'issue', 'comment', 'add', 'MUL-8', '--content', 'Line 1\\nLine 2', '--parent', 'comment-1',
+    'issue', 'comment', 'add', 'MUL-8', '--content', 'Line 1\\nLine 2', '--parent', 'comment-1', '--task', 'task-1',
   ], h.dependencies);
   await runBusinessCLI(config, [
     'issue', 'comment', 'list', 'MUL-8', '--thread', 'comment-1', '--tail', '30',
@@ -119,6 +120,56 @@ test('issue comment add/list implement text decoding and bounded thread paging',
     runBusinessCLI(config, ['issue', 'comment', 'list', 'MUL-8', '--tail', '3'], h.dependencies),
     /--tail requires --thread/,
   );
+});
+
+test('issue comment add --task writes as the agent: the POST carries the task token, never the PAT', async () => {
+  const h = harness(({ method, apiPath }) => (method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
+    ? { id: 'issue-8', identifier: 'MUL-8' }
+    : { id: 'comment-9', author_type: 'agent' }));
+  const seen = [];
+  h.dependencies.loadTaskToken = (taskId) => { seen.push(taskId); return 'mat_scoped'; };
+  await runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-1'], h.dependencies);
+  assert.deepEqual(seen, ['task-1']);
+  const post = h.calls.findIndex((c) => c.method === 'POST');
+  assert.equal(h.calls[post].apiPath, '/api/issues/issue-8/comments');
+  assert.equal(h.authTokens[post], 'mat_scoped', 'the comment write must authenticate with the task token');
+  assert.ok(!h.authTokens.slice(post).includes('secret'), 'the PAT must not be used for the write');
+  assert.equal(h.authTokens[0], 'secret', 'the read-only issue lookup may still use the PAT');
+});
+
+test('issue comment add without --task or --as-owner fails before any request (no silent PAT-owner write)', async () => {
+  const h = harness({ id: 'issue-8' });
+  await assert.rejects(
+    runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply'], h.dependencies),
+    /requires --task <task-id>.*--as-owner/s,
+  );
+  assert.equal(h.calls.length, 0, 'no request may be made when the actor is unspecified');
+  await assert.rejects(
+    runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-1', '--as-owner'], h.dependencies),
+    /mutually exclusive/,
+  );
+  assert.equal(h.calls.length, 0);
+});
+
+test('issue comment add --task with no stored token fails before any request', async () => {
+  const h = harness({ id: 'issue-8' });
+  h.dependencies.loadTaskToken = (taskId) => { throw new Error(`no active chat token for task ${taskId}`); };
+  await assert.rejects(
+    runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-gone'], h.dependencies),
+    /no active chat token for task task-gone/,
+  );
+  assert.equal(h.calls.length, 0, 'a missing token must not fall back to the PAT');
+});
+
+test('issue comment add --as-owner is the explicit opt-in for a PAT-owner (member) comment', async () => {
+  const h = harness(({ method, apiPath }) => (method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
+    ? { id: 'issue-8', identifier: 'MUL-8' }
+    : { id: 'comment-9', author_type: 'member' }));
+  h.dependencies.loadTaskToken = () => { throw new Error('must not be consulted'); };
+  await runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--as-owner'], h.dependencies);
+  const post = h.calls.findIndex((c) => c.method === 'POST');
+  assert.equal(h.calls[post].apiPath, '/api/issues/issue-8/comments');
+  assert.equal(h.authTokens[post], 'secret');
 });
 
 test('chat history requires a task and uses only its scoped token', async () => {
