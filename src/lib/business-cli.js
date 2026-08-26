@@ -248,18 +248,53 @@ async function commentList(config, issueRef, flags, request) {
   return { result, output };
 }
 
-async function commentAdd(config, issueRef, flags, request, io) {
-  rejectUnknown(flags, new Set(['content', 'content-stdin', 'content-file', 'allow-external-file', 'parent', 'output']));
-  // Validated before the issue lookup and the non-idempotent comment POST.
+// Everything about `issue comment add` that can be decided from the argv
+// alone is decided here, BEFORE runBusinessCLI resolves the workspace: on the
+// shipped slug-only config that resolution is a PAT-authenticated
+// GET /api/workspaces, so a late argument/actor/token error would land after
+// a request. #24's acceptance is "报错且不发请求" — no request at all.
+function planCommentAdd(flags, io, readTaskToken) {
+  rejectUnknown(flags, new Set(['content', 'content-stdin', 'content-file', 'allow-external-file', 'parent', 'task', 'as-owner', 'output']));
   const output = assertOutput(one(flags, 'output'));
   const content = resolveTextInput(flags, 'content', io);
   if (!content.present || content.value === '') throw new Error('--content, --content-stdin, or --content-file is required');
   const body = { content: content.value };
   const parent = one(flags, 'parent');
   if (parent !== undefined) body.parent_id = requireText(parent, '--parent').trim();
+
+  // Who the comment is written AS. The official daemon runs the agent with a
+  // task-scoped mat_ token and its CLI never falls back to the user's PAT
+  // inside a task ("that silent fallback is how agent writes land as the
+  // wrong actor"). Mirror that: --task authenticates the POST with the stored
+  // task token, so the server binds the comment to this agent (author_type
+  // "agent", source_task_id = the task) and agent-authored comments do not
+  // re-trigger the issue assignee — i.e. this agent does not dispatch a
+  // follow-up task to itself. Writing as the PAT owner is a member comment,
+  // which the server routes back to the assignee; that footgun is opt-in via
+  // a bare --as-owner, never the silent default — and never via a value-
+  // carrying form like `--as-owner false`, which bool() rejects like every
+  // other boolean option.
+  const taskFlag = one(flags, 'task');
+  const asOwner = bool(flags, 'as-owner');
+  if (taskFlag !== undefined && asOwner) throw new Error('--task and --as-owner are mutually exclusive');
+  if (taskFlag === undefined && !asOwner) {
+    throw new Error('issue comment add requires --task <task-id> (comment as this agent via its task token; '
+      + 'take the id from the task card) or --as-owner (comment as the PAT owner; on an issue assigned '
+      + 'to this agent that dispatches a follow-up task back to it)');
+  }
+  // The token is read now so a missing/invalid record fails before any request.
+  const taskToken = taskFlag !== undefined ? readTaskToken(requireText(taskFlag, '--task').trim()) : undefined;
+  return { output, body, taskToken };
+}
+
+async function commentAdd(config, issueRef, plan, request) {
+  // Issue lookup is a read; the PAT stays fine for it. Only the write changes actor.
   const issueId = (await resolveIssue(config, issueRef, request)).id;
-  const result = await request(config, 'POST', `/api/issues/${apiPath(issueId)}/comments`, body, { workspaceHeader: true });
-  return { result, output };
+  // Built after workspace resolution so the write carries the resolved
+  // workspace_id alongside the task token.
+  const authConfig = plan.taskToken !== undefined ? { ...config, pat: plan.taskToken } : config;
+  const result = await request(authConfig, 'POST', `/api/issues/${apiPath(issueId)}/comments`, plan.body, { workspaceHeader: true });
+  return { result, output: plan.output };
 }
 
 async function chatHistory(config, flags, request, readTaskToken) {
@@ -319,6 +354,14 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   // argument error can never surface after any API call. Commands still apply
   // their own default ('json' or 'table') when the flag is absent.
   if (flags.has('output')) assertOutput(one(flags, 'output'));
+  // `issue comment add` decides its actor (and reads the task token) before
+  // workspace resolution for the same reason: zero requests on argument error.
+  const isCommentAdd = group === 'issue' && command === 'comment' && subcommand === 'add';
+  let commentPlan;
+  if (isCommentAdd) {
+    if (rest.length !== 1) throw new Error('issue comment add requires exactly one issue key or UUID');
+    commentPlan = planCommentAdd(flags, io, readTaskToken);
+  }
   const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
   // chat history authenticates with the task-scoped token, not the PAT.
   if (group === 'issue') await resolveWorkspace(config, { request });
@@ -326,10 +369,8 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
   else if (group === 'issue' && command === 'get') response = await issueGet(config, [subcommand, ...rest].filter((value) => value !== undefined), flags, request);
   else if (group === 'issue' && command === 'list' && subcommand === undefined) response = await issueList(config, flags, request);
-  else if (group === 'issue' && command === 'comment' && subcommand === 'add') {
-    if (rest.length !== 1) throw new Error('issue comment add requires exactly one issue key or UUID');
-    response = await commentAdd(config, rest[0], flags, request, io);
-  } else if (group === 'issue' && command === 'comment' && subcommand === 'list') {
+  else if (isCommentAdd) response = await commentAdd(config, rest[0], commentPlan, request);
+  else if (group === 'issue' && command === 'comment' && subcommand === 'list') {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);
   } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);

@@ -96,6 +96,43 @@ test('delivery failure leaves the Multica task dispatched', async () => {
   assert.ok(!calls.some((call) => call.apiPath.endsWith('/start')));
 });
 
+test('issue task persists its scoped token before delivery and start', async () => {
+  const events = [];
+  const bridge = createBridge(config, {
+    createWakeupChannel: () => noWakeup,
+    storeTaskToken: (taskId, authToken) => events.push(['token', taskId, authToken]),
+    runScript: async () => { events.push(['deliver']); return { ok: true, stdout: '', stderr: '' }; },
+    request: async (_config, _method, apiPath) => {
+      if (apiPath === '/api/issues/issue-1') return { title: 'Task' };
+      if (apiPath.endsWith('/start')) events.push(['start']);
+      return {};
+    },
+  });
+  assert.equal(await bridge.handleTask({ id: 'task-3', issue_id: 'issue-1', auth_token: 'mat_issue_scoped' }), true);
+  assert.deepEqual(events, [['token', 'task-3', 'mat_issue_scoped'], ['deliver'], ['start']]);
+});
+
+test('issue task is still delivered when the claim carries no token or the token cannot be persisted', async () => {
+  for (const [task, store] of [
+    [{ id: 'task-4', issue_id: 'issue-1' }, () => { throw new Error('must not be called without a token'); }],
+    [{ id: 'task-5', issue_id: 'issue-1', auth_token: 'mat_x' }, () => { throw new Error('disk full'); }],
+  ]) {
+    const events = [];
+    const bridge = createBridge(config, {
+      createWakeupChannel: () => noWakeup,
+      storeTaskToken: store,
+      runScript: async () => { events.push('deliver'); return { ok: true, stdout: '', stderr: '' }; },
+      request: async (_config, _method, apiPath) => {
+        if (apiPath === '/api/issues/issue-1') return { title: 'Task' };
+        if (apiPath.endsWith('/start')) events.push('start');
+        return {};
+      },
+    });
+    assert.equal(await bridge.handleTask(task), true, task.id);
+    assert.deepEqual(events, ['deliver', 'start'], task.id);
+  }
+});
+
 test('chat task persists its scoped token before delivery and start', async () => {
   const events = [];
   const bridge = createBridge(config, {

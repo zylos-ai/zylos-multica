@@ -55,17 +55,17 @@ export function loadTaskToken(taskId, tokenDir = TASK_TOKEN_DIR) {
     parsed = JSON.parse(fs.readFileSync(tokenPath(id, tokenDir), 'utf8'));
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      throw new Error(`no active chat token for task ${id}`);
+      throw new Error(`no active task token for task ${id}`);
     }
-    throw new Error(`failed to read active chat token for task ${id}`);
+    throw new Error(`failed to read active task token for task ${id}`);
   }
   if (parsed?.task_id !== id) {
-    throw new Error(`invalid active chat token record for task ${id}`);
+    throw new Error(`invalid active task token record for task ${id}`);
   }
   try {
     return requireTaskToken(parsed.auth_token);
   } catch {
-    throw new Error(`invalid active chat token record for task ${id}`);
+    throw new Error(`invalid active task token record for task ${id}`);
   }
 }
 

@@ -133,8 +133,8 @@ test('send.js completes text and rejects media without a request', async () => {
   assert.equal(failResult.status, 0, failResult.stderr);
   const mediaResult = run('scripts/send.js', ['task-1', '[MEDIA:image]/tmp/a.png'], { env });
   assert.equal(mediaResult.status, 2);
-  assert.throws(() => loadTaskToken('task-1', tokenDir), /no active chat token/);
-  assert.throws(() => loadTaskToken('task-2', tokenDir), /no active chat token/);
+  assert.throws(() => loadTaskToken('task-1', tokenDir), /no active task token/);
+  assert.throws(() => loadTaskToken('task-2', tokenDir), /no active task token/);
   assert.equal(loadTaskToken('task-3', tokenDir), 'mat_task-3');
   assert.equal(fs.statSync(tokenDir).mode & 0o777, 0o700);
   const [remainingTokenFile] = fs.readdirSync(tokenDir);

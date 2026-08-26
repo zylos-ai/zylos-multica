@@ -59,6 +59,16 @@ function buildFollowUpCard(task, issue) {
     '',
     comment ? quoteBlock(comment) : '> (empty comment)',
   ];
+  // A comment-triggered task may only comment in-thread (the server 409s a
+  // top-level comment), and only the task token makes that comment the
+  // agent's own — so hand over the exact command, id included.
+  const triggerCommentId = sanitizeExternalText(task.trigger_comment_id).trim();
+  if (triggerCommentId && issueRef) {
+    lines.push(
+      '',
+      `Comment ID: ${triggerCommentId}. To post a comment in this thread as yourself while this task is live (a plain reply to this card completes the task instead): node ${shellQuote(MULTICA_CLI_PATH)} issue comment add ${shellQuote(issueRef)} --task ${shellQuote(taskId)} --parent ${shellQuote(triggerCommentId)} --content "<text>"`,
+    );
+  }
   const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
   if (coalesced.length) {
     lines.push('', `This run also covers ${coalesced.length} earlier comment(s) posted before it started — address them too:`);

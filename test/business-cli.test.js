@@ -14,9 +14,20 @@ const config = {
   workspace_id: 'workspace-1',
 };
 
+// The shipped configuration shape: normalizeConfig drops workspace_id whenever
+// a slug exists, so every issue command's first request is the PAT-authenticated
+// GET /api/workspaces. Zero-request assertions must use this fixture — the
+// slug+id `config` above early-returns from resolution and would hide a leak.
+const slugOnlyConfig = {
+  base_url: 'https://multica.example',
+  pat: 'secret',
+  workspace_slug: 'workspace-1',
+};
+
 function harness(response = {}) {
   const calls = [];
   const authTokens = [];
+  const workspaceIds = [];
   let output = '';
   const stdout = new PassThrough();
   stdout.setEncoding('utf8');
@@ -28,11 +39,13 @@ function harness(response = {}) {
       stdout,
       request: async (requestConfig, method, apiPath, body, options) => {
         authTokens.push(requestConfig.pat);
+        workspaceIds.push(requestConfig.workspace_id);
         calls.push({ method, apiPath, body, options });
         return typeof response === 'function' ? response({ method, apiPath, body, options }) : response;
       },
     },
     authTokens,
+    workspaceIds,
   };
 }
 
@@ -99,8 +112,9 @@ test('issue comment add/list implement text decoding and bounded thread paging',
   const h = harness(({ method, apiPath }) => method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
     ? { id: 'issue-8', identifier: 'MUL-8' }
     : []);
+  h.dependencies.loadTaskToken = (taskId) => `mat_token_for_${taskId}`;
   await runBusinessCLI(config, [
-    'issue', 'comment', 'add', 'MUL-8', '--content', 'Line 1\\nLine 2', '--parent', 'comment-1',
+    'issue', 'comment', 'add', 'MUL-8', '--content', 'Line 1\\nLine 2', '--parent', 'comment-1', '--task', 'task-1',
   ], h.dependencies);
   await runBusinessCLI(config, [
     'issue', 'comment', 'list', 'MUL-8', '--thread', 'comment-1', '--tail', '30',
@@ -119,6 +133,96 @@ test('issue comment add/list implement text decoding and bounded thread paging',
     runBusinessCLI(config, ['issue', 'comment', 'list', 'MUL-8', '--tail', '3'], h.dependencies),
     /--tail requires --thread/,
   );
+});
+
+test('issue comment add --task writes as the agent: the POST carries the task token, never the PAT', async () => {
+  const h = harness(({ method, apiPath }) => (method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
+    ? { id: 'issue-8', identifier: 'MUL-8' }
+    : { id: 'comment-9', author_type: 'agent' }));
+  const seen = [];
+  h.dependencies.loadTaskToken = (taskId) => { seen.push(taskId); return 'mat_scoped'; };
+  await runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-1'], h.dependencies);
+  assert.deepEqual(seen, ['task-1']);
+  const post = h.calls.findIndex((c) => c.method === 'POST');
+  assert.equal(h.calls[post].apiPath, '/api/issues/issue-8/comments');
+  assert.equal(h.authTokens[post], 'mat_scoped', 'the comment write must authenticate with the task token');
+  assert.ok(!h.authTokens.slice(post).includes('secret'), 'the PAT must not be used for the write');
+  assert.equal(h.authTokens[0], 'secret', 'the read-only issue lookup may still use the PAT');
+});
+
+test('slug-only config: issue comment add without --task or --as-owner fails with zero requests', async () => {
+  // Reviewer finding (review of a483a2b): the earlier fixture carried both
+  // slug and id, so workspace resolution early-returned and the "zero
+  // requests" assertion never covered the production GET /api/workspaces.
+  const h = harness([{ id: 'ws-1', slug: 'workspace-1' }]);
+  await assert.rejects(
+    runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply'], h.dependencies),
+    /requires --task <task-id>.*--as-owner/s,
+  );
+  assert.equal(h.calls.length, 0, 'no request (incl. GET /api/workspaces) may be made when the actor is unspecified');
+  await assert.rejects(
+    runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-1', '--as-owner'], h.dependencies),
+    /mutually exclusive/,
+  );
+  assert.equal(h.calls.length, 0);
+});
+
+test('slug-only config: issue comment add --task with no stored token fails with zero requests', async () => {
+  const h = harness([{ id: 'ws-1', slug: 'workspace-1' }]);
+  h.dependencies.loadTaskToken = (taskId) => { throw new Error(`no active task token for task ${taskId}`); };
+  await assert.rejects(
+    runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-gone'], h.dependencies),
+    /no active task token for task task-gone/,
+  );
+  assert.equal(h.calls.length, 0, 'a missing token must neither fall back to the PAT nor be preceded by workspace resolution');
+});
+
+test('slug-only config: --as-owner with a value is rejected with zero requests (no "--as-owner false" owner write)', async () => {
+  // Reviewer finding (review of a483a2b): flags.has() accepted `--as-owner
+  // false` as an opt-in and performed the PAT-owner POST. The flag that
+  // exposes the wrong-actor footgun must use the same strict boolean parsing
+  // as every other boolean option.
+  for (const value of ['false', 'true', 'no']) {
+    const h = harness([{ id: 'ws-1', slug: 'workspace-1' }]);
+    h.dependencies.loadTaskToken = () => { throw new Error('must not be consulted'); };
+    await assert.rejects(
+      runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--as-owner', value], h.dependencies),
+      /--as-owner does not take a value/,
+    );
+    assert.equal(h.calls.length, 0, `zero requests for --as-owner ${value}`);
+  }
+});
+
+test('slug-only config: issue comment add --task resolves the workspace first and the agent write carries the resolved id', async () => {
+  // Positive control for the preflight reordering: the token is read before
+  // any request, the resolution GET is the first request, and the POST is
+  // signed with the task token AND stamped with the workspace id resolved
+  // after the preflight (the auth config must not be frozen pre-resolution).
+  const order = [];
+  const h = harness(({ method, apiPath }) => {
+    if (apiPath === '/api/workspaces') return [{ id: 'ws-resolved', slug: 'workspace-1' }];
+    if (method === 'GET') return { id: 'issue-8', identifier: 'MUL-8' };
+    return { id: 'comment-9', author_type: 'agent' };
+  });
+  h.dependencies.loadTaskToken = (taskId) => { order.push(`token:${taskId}`); return 'mat_scoped'; };
+  h.dependencies.request = ((inner) => async (...args) => { order.push(`${args[1]} ${args[2]}`); return inner(...args); })(h.dependencies.request);
+  await runBusinessCLI({ ...slugOnlyConfig }, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--task', 'task-1'], h.dependencies);
+  assert.deepEqual(order, ['token:task-1', 'GET /api/workspaces', 'GET /api/issues/MUL-8', 'POST /api/issues/issue-8/comments']);
+  assert.equal(h.calls[2].method, 'POST');
+  assert.equal(h.workspaceIds[2], 'ws-resolved', 'the agent write must carry the workspace id resolved after the preflight');
+  assert.equal(h.authTokens[2], 'mat_scoped');
+  assert.deepEqual(h.authTokens.slice(0, 2), ['secret', 'secret'], 'reads (resolution + issue lookup) stay on the PAT');
+});
+
+test('issue comment add --as-owner is the explicit opt-in for a PAT-owner (member) comment', async () => {
+  const h = harness(({ method, apiPath }) => (method === 'GET' && /^\/api\/issues\/MUL-8$/.test(apiPath)
+    ? { id: 'issue-8', identifier: 'MUL-8' }
+    : { id: 'comment-9', author_type: 'member' }));
+  h.dependencies.loadTaskToken = () => { throw new Error('must not be consulted'); };
+  await runBusinessCLI(config, ['issue', 'comment', 'add', 'MUL-8', '--content', 'reply', '--as-owner'], h.dependencies);
+  const post = h.calls.findIndex((c) => c.method === 'POST');
+  assert.equal(h.calls[post].apiPath, '/api/issues/issue-8/comments');
+  assert.equal(h.authTokens[post], 'secret');
 });
 
 test('chat history requires a task and uses only its scoped token', async () => {
@@ -200,11 +304,6 @@ test('slug-only config: invalid --output rejects with zero requests, before work
   // real GET /api/workspaces — the production first request. Reviewer finding
   // (review of 21e0c75): the previous fixture preloaded both slug and id, so
   // the early return hid that this GET ran before --output validation.
-  const slugOnlyConfig = {
-    base_url: 'https://multica.example',
-    pat: 'secret',
-    workspace_slug: 'workspace-1',
-  };
   for (const argv of [
     ['issue', 'create', '--title', 'Title', '--output', 'yaml'],
     ['issue', 'comment', 'add', 'PROJ-1', '--content', 'hello', '--output', 'yaml'],

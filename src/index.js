@@ -332,6 +332,25 @@ export function createBridge(initialConfig, dependencies = {}) {
       return true;
     }
 
+    // Every claim carries a task-scoped mat_ token (the official daemon hands it
+    // to the agent as MULTICA_TOKEN). Keep it for issue tasks too, so the agent
+    // can `issue comment add --task` as itself instead of as the PAT owner.
+    // Unlike chat, the task stays deliverable and completable without it — only
+    // the actor-bound comment path needs it, and that path fails loudly on a
+    // missing token rather than falling back to the PAT.
+    if (task.auth_token) {
+      try {
+        persistTaskToken(task.id, task.auth_token);
+      } catch (error) {
+        log('WARN', 'issue task token could not be persisted; delivering without it', {
+          task_id: task.id,
+          error: String(error?.message || error).slice(0, 200),
+        });
+      }
+    } else {
+      log('WARN', 'claim carried no task-scoped token; agent-actor comments unavailable for this task', { task_id: task.id });
+    }
+
     const issue = await fetchIssue(task.issue_id);
     const card = buildTaskCard(task, issue);
     const dueAt = futureDueDate(issue, now());
