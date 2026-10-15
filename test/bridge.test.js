@@ -24,7 +24,7 @@ const config = {
   runtime: { type: 'zylos', name: 'Jinglever (zylos)', version: '0.2.21' },
 };
 
-test('claim-aware bridge prepares safely and delivers generation-bound begin guidance after exact start', async t => {
+test('claim-aware bridge delivers Agent-owned resources after exact start without constructing Git manager', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-bridge-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const task = {
@@ -52,13 +52,7 @@ test('claim-aware bridge prepares safely and delivers generation-bound begin gui
     request, createWakeupChannel: () => noWakeup,
     preparationRoot: path.join(root, 'preparations'),
     createTaskState: (cfg, deps) => (state = createTaskState(cfg, { ...deps, root: path.join(root, 'state') })),
-    createWorktreeManager: () => ({
-      prepare: async (_task, _resources, { generation }) => {
-        assert.equal(generation, state.get(task.id).generation);
-        events.push('prepare');
-      },
-      inspect: () => ({ bindings: [{ id: 'repo', cwd: path.join(root, 'worktree'), branch: 'task-branch' }] }),
-    }),
+    createWorktreeManager: () => { throw Error('must never construct Git manager'); },
     storeTaskToken: (id, token) => {
       assert.equal(id, task.id);
       assert.equal(token, task.auth_token);
@@ -81,12 +75,12 @@ test('claim-aware bridge prepares safely and delivers generation-bound begin gui
   }
   const record = state.get(task.id);
   assert.equal(record.delivery?.delivered, true);
-  assert.deepEqual(events, ['lease', 'prepare', 'start', 'deliver']);
+  assert.deepEqual(events, ['start', 'deliver']);
   const endpoint = `${task.id}@${record.generation}`;
   assert.equal(deliveryArgs[deliveryArgs.indexOf('--endpoint') + 1], endpoint);
   assert.ok(deliveryArgs.at(-1).includes(`begin '${endpoint}'`));
   assert.match(deliveryArgs.at(-1), /Proceed only if accepted=true/);
-  assert.ok(deliveryArgs.at(-1).includes(path.join(root, 'worktree')));
+  assert.match(deliveryArgs.at(-1), /component does not run Git/);
   const snapshots = fs.readdirSync(path.join(root, 'preparations'));
   assert.equal(snapshots.length, 1);
   const snapshot = fs.readFileSync(path.join(root, 'preparations', snapshots[0]), 'utf8');

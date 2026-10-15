@@ -1,4 +1,4 @@
-/** Durable local claim/report state. Execution occupancy belongs to worktree manager.
+/** Durable local claim/report state. Agent explicitly acknowledges stopped work.
  * Uses an OS flock; an OS lock dying is NOT proof execution has stopped.
  */
 import fs from 'node:fs';
@@ -353,6 +353,38 @@ export function createTaskState(config, options = {}) {
         try { await startRequest(record); }
         catch (error) { record.start_unknown = true; save(record); throw error; }
         record.start_confirmed = true; record.start_unknown = false;
+        return save(record);
+      });
+    },
+    async setAgentDelivery(taskId, generation, delivery) {
+      return lock(taskId, () => {
+        const record = assertCurrent({ taskId, generation });
+        if (record.execution.accepted) throw new Error('cannot replace an accepted task card');
+        if (!delivery || delivery.endpoint !== `${taskId}@${generation}` || typeof delivery.content !== 'string'
+          || !delivery.content || delivery.content.includes('\0') || !delivery.content.isWellFormed()) throw new Error('invalid task delivery');
+        if (record.delivery?.resource_model === 'agent-owned-v1') return record;
+        if (record.delivery) (record.delivery_history ??= []).push(record.delivery);
+        record.delivery = { ...delivery, resource_model: 'agent-owned-v1', delivered: false };
+        return save(record);
+      });
+    },
+    async acknowledgeLegacyStopped(taskId, generation) {
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        record.execution.legacy_stopped_acknowledged = true;
+        return save(record);
+      });
+    },
+    async acknowledgeStopped(taskId, generation, metadata = {}) {
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        if (record.report) throw new Error('terminal report is frozen; use reconcile');
+        const selected = {};
+        for (const key of ['work_dir', 'branch_name', 'pr_url']) {
+          if (metadata[key] !== undefined) selected[key] = string(metadata[key], key);
+        }
+        record.execution = { ...record.execution, quiesced: true,
+          stopped_acknowledged_at: now(), metadata: selected };
         return save(record);
       });
     },

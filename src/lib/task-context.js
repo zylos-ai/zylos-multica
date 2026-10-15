@@ -56,7 +56,7 @@ export function storeTaskContext(task, identity, root = TASK_CONTEXT_DIR) {
   const skills = list(agent.skills, 'skills');
   const repos = list(task.repos, 'repos');
   const resources = list(task.project_resources, 'project_resources');
-  const context = pick(task, ['workspace_context', 'project_id', 'project_title', 'project_description']);
+  const context = pick(task, ['workspace_context', 'project_id', 'project_title', 'project_description', 'prior_work_dir', 'work_dir', 'relative_work_dir', 'branch_name']);
   if (!Object.keys(context).length && !skills.length && !repos.length && !resources.length && !agent.instructions) return null;
   text(task.id, 'task id');
   const files = new Map();
@@ -82,8 +82,8 @@ export function storeTaskContext(task, identity, root = TASK_CONTEXT_DIR) {
     workspace_id: identity.workspace_id,
     agent_id: task.agent_id ?? agent.id ?? null,
     ...context,
-    repos: repos.map((repo) => pick(repo, ['url', 'description', 'ref'])),
-    project_resources: resources.map((resource) => pick(resource, ['id', 'resource_type', 'resource_ref', 'label'])),
+    repos: repos,
+    project_resources: resources,
     agent_instructions: agent.instructions ? 'agent-instructions.md' : null,
     skills: [],
   };

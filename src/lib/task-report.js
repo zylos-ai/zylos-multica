@@ -1,5 +1,4 @@
 /** CLI boundary: generation belongs to the caller, never inferred from disk. */
-import { createWorktreeManager } from './worktrees.js';
 import { createTaskState } from './task-state.js';
 import { ensureWorkspaceResolved } from './workspace.js';
 import { removeTaskToken } from './task-tokens.js';
@@ -34,15 +33,8 @@ export async function reportFromCLI(config, endpoint, action, text, options = {}
     else if (state.get(taskId)) throw new Error('Bound task progress requires task_id@generation');
     return reportTask(config, action, taskId, text);
   }
-  let metadata = {};
-  if (action !== 'reconcile') {
-    const execution = options.executionMetadata ? options.executionMetadata(taskId) : createWorktreeManager({ config, lifecycle: state }).inspect(taskId);
-    if (execution?.generation && execution.generation !== generation) throw new Error('stale execution metadata');
-    if (execution?.bindings?.length === 1) {
-      const binding = execution.bindings[0];
-      metadata = { work_dir: binding.cwd, ...(binding.branch ? { branch_name: binding.branch } : {}) };
-    }
-  }
+  const metadata = { ...(action === 'reconcile' ? {} : state.get(taskId)?.execution.metadata ?? {}) };
+  if (action === 'fail') delete metadata.pr_url;
   const record = action === 'reconcile'
     ? await state.reconcile(taskId, { generation, replay: true })
     : await state.report(taskId, generation, action, { ...metadata, [action === 'complete' ? 'output' : 'error']: text });

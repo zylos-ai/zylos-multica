@@ -1,3 +1,4 @@
+// HISTORICAL ONLY: no supported runtime callers since #44; see docs/agent-owned-resources.md.
 /** CLI parser kept independent from the coordinator's lifecycle wiring. */
 export async function runWorktreeCli(argv, { manager, output = (value) => process.stdout.write(`${JSON.stringify(value)}\n`) }) {
   const [action, ...args] = argv;
