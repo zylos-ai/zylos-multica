@@ -30,6 +30,7 @@ function authorLabel(authorType, authorName, fallback = 'A user') {
 
 function taskCardFooter(taskId) {
   return [
+    'If unfamiliar with task replies, see "Reply and task lifecycle" in ~/zylos/.claude/skills/multica/SKILL.md; otherwise proceed using the rules you already know.',
     // The command copies use the sanitized ID too: shell quoting alone leaves
     // C4's reply-route marker substrings intact, so a noncanonical task ID
     // must not reintroduce a forged route after the display-field sanitization.

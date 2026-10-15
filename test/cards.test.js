@@ -132,6 +132,7 @@ test('cards leave reply instructions to C4 without promising automatic forwardin
   assert.match(cards[0], /This is a chat message\./);
   assert.match(cards[0], /report\.js' fail 'chat-route'/);
   for (const [index, taskId] of [[1, 'task-route'], [2, 'followup-route']]) {
+    assert.match(cards[index], /If unfamiliar with task replies, see "Reply and task lifecycle" in ~\/zylos\/\.claude\/skills\/multica\/SKILL\.md; otherwise proceed/);
     assert.ok(cards[index].includes(`progress '${taskId}' "<status>"`));
     assert.ok(cards[index].includes(`fail '${taskId}' "<reason>"`));
   }

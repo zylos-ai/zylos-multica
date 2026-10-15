@@ -57,11 +57,27 @@ official core release for scheduler `list --json` due-date reconciliation.
 Older cores keep ordinary Multica delivery available but log a reconciliation
 warning.
 
+## Reply and task lifecycle
+
 To reply to a Multica card, explicitly execute its attached C4 `reply via:`
 command, passing your message on stdin (use a quoted heredoc as required by
 comm-bridge). This completes the task; for a chat task, it also posts your text
 as the assistant message in the originating Multica conversation. An ordinary
 assistant final response alone is not sent to Multica.
+
+A task card represents one execution run of an issue; a follow-up card represents
+a run triggered by an issue comment. Completing this run is not the same as
+accepting or closing the whole issue. Use the reply route only for the final
+result, once: an acknowledgement such as "received, looking into it" would end
+the run prematurely. Chat cards also use a task, with completion delivering the
+assistant message to the originating conversation.
+
+For interim updates, use `progress`; if the run cannot be completed, use `fail`.
+For discussion on the issue, use `issue comment add --task <task-id>` while the
+run is active. On comment-triggered runs, also pass `--parent <trigger-comment-id>`
+to reply in that thread. Post comments before completion or failure, because
+both remove the local task token. The follow-up card includes the scoped comment
+command; the CLI examples below show the general form.
 
 Use the supplemental reporter only for progress or failure:
 
@@ -71,6 +87,8 @@ node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id> "<reason>"
 ```
 
 Media replies are not supported in v0.2.21; send text instead.
+
+## Business CLI
 
 Quick-create tasks are translated directly into one issue after task validation:
 the bridge starts the task, creates exactly one issue with origin and pre-uploaded
