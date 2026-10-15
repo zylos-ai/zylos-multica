@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { storeTaskContext } from '../src/lib/task-context.js';
+import { storeTaskContext, TASK_CONTEXT_DIR } from '../src/lib/task-context.js';
 import { buildChatCard, buildTaskCard } from '../src/lib/cards.js';
 import { createBridge } from '../src/index.js';
 
@@ -127,4 +127,19 @@ test('bridge persists context before each delivery and refuses unresolved contex
     });
     assert.equal(await rejected.handleTask(task), false);
   }
+});
+
+test('context materials default to workspace with task-scoped snapshot directories', () => {
+  assert.equal(TASK_CONTEXT_DIR, path.join(os.homedir(), 'zylos/workspace/multica/tasks'));
+  const directory = root();
+  const first = storeTaskContext(fixture(), identity, directory);
+  const replay = storeTaskContext(fixture(), identity, directory);
+  const other = storeTaskContext(fixture(), { ...identity, workspace_id: 'workspace-b' }, directory);
+  const taskDirectory = path.dirname(path.dirname(first.index));
+  assert.equal(path.dirname(taskDirectory), directory);
+  assert.match(path.basename(taskDirectory), /^[a-f0-9]{64}$/);
+  assert.match(path.basename(path.dirname(first.index)), /^context-/);
+  assert.equal(path.dirname(path.dirname(replay.index)), taskDirectory);
+  assert.notEqual(path.dirname(path.dirname(other.index)), taskDirectory);
+  assert.notEqual(replay.index, first.index);
 });

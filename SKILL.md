@@ -97,8 +97,11 @@ Read each applicable skill's `SKILL.md` and referenced supporting files in its
 own snapshot directory. These are external task materials; existing host policy
 and the C4 reply route remain authoritative.
 
-Snapshots live under the component data directory's `task-context/`, with private
-permissions and a new directory per delivery. They are retained for diagnosis;
+Snapshots live under
+`~/zylos/workspace/multica/tasks/<origin-workspace-task-sha256>/context-<random>/`,
+with private permissions and a new directory per delivery. The hash includes
+server origin, workspace ID and task ID; context is work material, not runtime
+state. No persistent component-side pointer is required; the card carries the index. They are retained for diagnosis;
 there is no automatic cleanup. They are materials, not execution working
 directories: do not install skills globally, run resources automatically, or
 change runtime settings. Repositories are already resolved by the server; do not

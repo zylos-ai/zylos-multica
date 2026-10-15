@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Store task context materials in task-scoped workspace snapshots, keeping component runtime state separate.
+
 ### Added
 
 - Preserve claim-provided workspace/project resources, resolved repositories,
