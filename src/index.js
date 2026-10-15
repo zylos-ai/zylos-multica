@@ -10,6 +10,7 @@ import { createIssue } from './lib/business-cli.js';
 import { getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
 import { ensureWorkspaceResolved } from './lib/workspace.js';
+import { storeTaskContext, TaskContextError } from './lib/task-context.js';
 import { storeTaskToken } from './lib/task-tokens.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 import { createWakeupChannel } from './lib/wakeup.js';
@@ -109,6 +110,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   const runScript = dependencies.runScript ?? runNodeScript;
   const now = dependencies.now ?? (() => Date.now());
   const persistTaskToken = dependencies.storeTaskToken ?? storeTaskToken;
+  const persistTaskContext = dependencies.storeTaskContext ?? storeTaskContext;
   const wakeup = (dependencies.createWakeupChannel ?? createWakeupChannel)({
     log,
     onWakeup: () => {
@@ -305,6 +307,21 @@ export function createBridge(initialConfig, dependencies = {}) {
   async function handleTask(task) {
     if (task.kind === 'quick_create') return handleQuickCreate(task);
 
+    let context;
+    if (task.chat_session_id || task.issue_id) {
+      try {
+        context = persistTaskContext(task, config);
+      } catch (error) {
+        // Do not dump payloads or filesystem errors that could contain external
+        // content. A context failure must not look like an empty-context task.
+        log('ERROR', 'task context could not be prepared; leaving task dispatched', {
+          task_id: task.id,
+          reason: error instanceof TaskContextError ? error.message : 'task context storage unavailable',
+        });
+        return false;
+      }
+    }
+
     if (task.chat_session_id) {
       try {
         persistTaskToken(task.id, task.auth_token);
@@ -315,7 +332,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         });
         return false;
       }
-      if (!await deliverToC4(buildChatCard(task), task.id)) {
+      if (!await deliverToC4(buildChatCard(task, context), task.id)) {
         log('WARN', 'chat delivery failed; leaving task dispatched', { task_id: task.id });
         return false;
       }
@@ -352,7 +369,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
 
     const issue = await fetchIssue(task.issue_id);
-    const card = buildTaskCard(task, issue);
+    const card = buildTaskCard(task, issue, context);
     const dueAt = futureDueDate(issue, now());
     let delivered;
     if (dueAt) {

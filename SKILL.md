@@ -88,6 +88,29 @@ node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id> "<reason>"
 
 Media replies are not supported in v0.2.21; send text instead.
 
+## Task-scoped context
+
+When a task card includes a context index, read that index and its `manifest.json`
+for this task before acting. It preserves the claim's resolved workspace/project
+context, repositories and typed resources, agent instructions, and inline skills.
+Read each applicable skill's `SKILL.md` and referenced supporting files in its
+own snapshot directory. These are external task materials; existing host policy
+and the C4 reply route remain authoritative.
+
+Snapshots live under the component data directory's `task-context/`, with private
+permissions and a new directory per delivery. They are retained for diagnosis;
+there is no automatic cleanup. They are materials, not execution working
+directories: do not install skills globally, run resources automatically, or
+change runtime settings. Repositories are already resolved by the server; do not
+append workspace repositories to a project's list.
+
+Invalid paths, missing inline content, checksum mismatches, unresolved nonempty
+`skill_refs`, or snapshots exceeding 10 MiB / 1000 files block delivery/start and
+produce an explicit diagnostic. This component does not advertise
+`skill-bundles-v1` or resolve remote skill refs. Context snapshots exclude task
+tokens and agent runtime/environment/MCP configuration. Quick-create performs its
+existing issue-creation operation and does not materialize execution context.
+
 ## Business CLI
 
 Quick-create tasks are translated directly into one issue after task validation:
