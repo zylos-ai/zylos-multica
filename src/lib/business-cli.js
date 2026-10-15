@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { downloadAttachment } from './attachments.js';
 import { multicaRequest } from './multica-api.js';
 import { loadTaskToken } from './task-tokens.js';
 import { ensureWorkspaceResolved } from './workspace.js';
@@ -366,7 +367,16 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   // chat history authenticates with the task-scoped token, not the PAT.
   if (group === 'issue') await resolveWorkspace(config, { request });
   let response;
-  if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
+  if (group === 'attachment' && command === 'download') {
+    rejectUnknown(flags, new Set(['task', 'output-dir', 'output']));
+    if (!subcommand || rest.length) throw new Error('attachment download requires exactly one attachment ID');
+    const taskId = requireText(one(flags, 'task'), '--task').trim();
+    const taskToken = readTaskToken(taskId);
+    const outputDir = one(flags, 'output-dir');
+    if (outputDir !== undefined) requireText(outputDir, '--output-dir');
+    const result = await downloadAttachment(config, { taskId, attachmentId: subcommand, taskToken, outputDir }, dependencies);
+    response = { result, output: assertOutput(one(flags, 'output')) };
+  } else if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
   else if (group === 'issue' && command === 'get') response = await issueGet(config, [subcommand, ...rest].filter((value) => value !== undefined), flags, request);
   else if (group === 'issue' && command === 'list' && subcommand === undefined) response = await issueList(config, flags, request);
   else if (isCommentAdd) response = await commentAdd(config, rest[0], commentPlan, request);
@@ -374,7 +384,7 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);
   } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);
-  else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ...');
+  else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ... | attachment download <id> --task <id> ...');
 
   if (response.output === 'table') printTable(response.result, io.stdout);
   else io.stdout.write(`${JSON.stringify(response.result, null, 2)}\n`);

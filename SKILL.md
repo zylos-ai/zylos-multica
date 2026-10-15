@@ -105,6 +105,8 @@ node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update" --task <task-id>
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
 node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
+node ~/zylos/.claude/skills/multica/scripts/multica.js attachment download <attachment-id> --task <task-id>
+node ~/zylos/.claude/skills/multica/scripts/multica.js attachment download <attachment-id> --task <task-id> --output-dir images --output json
 ```
 
 `chat history` works only while the referenced chat task is active. The bridge
@@ -124,3 +126,31 @@ card prints the complete command. `--as-owner` writes as the component PAT owner
 comment); on an issue assigned to this agent that dispatches a comment task
 back to the agent, so use it only when that is intended. There is no silent
 default.
+
+### Attachment downloads
+
+Download only an attachment needed for the current request, using its ID and task
+ID from the task/chat card. The bridge records allowed attachment IDs for each
+claimed task; arbitrary URLs and IDs from another task are rejected. No resources
+are downloaded automatically, and downloaded content is never executed or
+extracted by this command. Inspect unfamiliar files before using them.
+
+`attachment download` requires that task's active token, with no owner-PAT fallback.
+Run it before completing/failing the task. The metadata request uses the task token
+and workspace; signed absolute download URLs receive no authorization headers.
+The result is `{id, filename, path, size}` (actual downloaded bytes), with the normal
+`--output json|table` conventions. Downloads are limited to 100 MiB and 60 seconds.
+
+Files go under `~/zylos/components/multica/task-downloads/<task-id-sha256>/files/`.
+`--output-dir` selects a directory relative to that task's hashed directory, or an
+absolute path beneath it. It does not select an arbitrary machine directory. Paths
+with symlink components, unsafe filenames, and existing destinations are refused;
+choose another task-local directory to keep a second copy. Files and the manifest
+are private, retained after task completion, and not cleaned up automatically.
+
+A missing token/manifest, unlisted attachment, workspace mismatch, failed
+metadata/download request, invalid redirect, size overflow, or local write failure
+is an explicit failure; no partial output file is published and no download is
+retried automatically. This is directory isolation for normal use, not an OS
+sandbox against another process changing directories concurrently. Uploads and
+comment-attachment creation are outside this command's scope.
