@@ -119,18 +119,17 @@ test('first-assignment card renders the handoff note after the issue body', () =
 });
 
 
-test('chat, task and follow-up cards require an explicit C4 send on stdin', () => {
+test('cards leave reply instructions to C4 without promising automatic forwarding', () => {
   const cards = [
     buildChatCard({ id: 'chat-route', chat_session_id: 'session', chat_message: 'hello' }),
     buildTaskCard({ id: 'task-route' }, { title: 'Task' }),
     buildTaskCard({ id: 'followup-route', trigger_comment_id: 'comment', trigger_comment_content: 'follow up' }, { title: 'Task' }),
   ];
   for (const card of cards) {
-    assert.match(card, /executing the attached C4 reply via: command with your message on stdin/);
-    assert.match(card, /An ordinary assistant final response alone is not sent to Multica/);
+    assert.doesNotMatch(card, /C4|reply via:|assistant final response/);
     assert.doesNotMatch(card, /Reply normally|a plain reply to this card|the reply will be completed back/);
   }
-  assert.match(cards[0], /completes the task and posts your text as the assistant message in Multica/);
+  assert.match(cards[0], /This is a chat message\./);
   assert.match(cards[0], /report\.js' fail 'chat-route'/);
   for (const [index, taskId] of [[1, 'task-route'], [2, 'followup-route']]) {
     assert.ok(cards[index].includes(`progress '${taskId}' "<status>"`));
