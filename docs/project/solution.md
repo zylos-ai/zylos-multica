@@ -30,7 +30,7 @@ multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spaw
 3. 配置收集非交互（configure hook）；升级保全 config；文档/CHANGELOG/测试齐全。
 
 **非目标**（留 backlog，不阻塞 v0.1.0）:
-- 聊天附件拉取（现状：卡内列文件名）
+- 聊天附件拉取（v0.1.0 历史非目标；#30 附件切片已新增按任务显式下载，详见 SKILL.md；不自动拉取、上传或执行）
 - 派发人 attribution 增强（claim 无 attribution 的已知缺口）
 - 单组件多 runtime/多 agent 路由
 - 向 multica 上游贡献 pkg/agent 适配器（那是"agent=函数"路线，另行讨论）

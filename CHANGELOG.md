@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Task-scoped `attachment download` with claimed-ID checks, binary streaming,
+  a 100 MiB cap, credential-safe redirects, and contained non-overwriting files.
+- Chat, issue, and follow-up cards include attachment IDs and explicit download
+  commands. Downloads remain opt-in; no uploads, execution, or auto-extraction.
+
 ## [0.3.4] - 2026-10-15
 
 ### Fixed

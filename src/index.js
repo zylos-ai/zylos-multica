@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
+import { storeTaskAttachments } from './lib/attachments.js';
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
 import { getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
@@ -315,6 +316,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         });
         return false;
       }
+      (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task);
       if (!await deliverToC4(buildChatCard(task), task.id)) {
         log('WARN', 'chat delivery failed; leaving task dispatched', { task_id: task.id });
         return false;
@@ -352,6 +354,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
 
     const issue = await fetchIssue(task.issue_id);
+    (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
     const card = buildTaskCard(task, issue);
     const dueAt = futureDueDate(issue, now());
     let delivered;
