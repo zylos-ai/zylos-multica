@@ -292,7 +292,7 @@ export function createTaskState(config, options = {}) {
         const frozen = { content: delivery.content, endpoint: delivery.endpoint };
         if (delivery.dueAt !== undefined) frozen.dueAt = string(delivery.dueAt, 'delivery dueAt');
         if (record.delivery) {
-          const existing = { ...record.delivery }; delete existing.delivered;
+          const existing = { ...record.delivery }; delete existing.delivered; delete existing.delivered_at;
           if (digest(existing) !== digest(frozen)) throw new Error('task delivery conflicts with frozen card');
           return record;
         }
@@ -304,7 +304,7 @@ export function createTaskState(config, options = {}) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
         if (!record.delivery) throw new Error('task has no frozen delivery');
-        record.delivery.delivered = true;
+        record.delivery.delivered = true; record.delivery.delivered_at = now();
         return save(record);
       });
     },
@@ -313,6 +313,13 @@ export function createTaskState(config, options = {}) {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
         if (record.execution.accepted) return false;
         record.execution.accepted = true; save(record); return true;
+      });
+    },
+    async quiesceUnaccepted(taskId, generation) {
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        if (record.execution.accepted) return false;
+        record.execution.quiesced = true; save(record); return true;
       });
     },
     async markQuiesced(taskId, generation) {

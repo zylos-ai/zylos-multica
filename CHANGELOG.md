@@ -21,12 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task-scoped snapshots. All execution card types link the context index (#30).
 - Refuse delivery/start when context cannot be safely materialized, including
   unresolved skill refs, invalid supporting paths, and oversized payloads.
-- Add an integration-only task worktree manager with persistent resource
+- Add a task worktree manager with persistent resource
   bindings, workline/path exclusion, source snapshots and confirmed continuation.
 - Add explicit-cwd command execution, quiescence and conservative interruption
   recovery. Preparation is asynchronous and cancellable so lease timers can run.
 - Keep work content under `workspace/multica` and execution metadata under the
-  component data directory. No production integration or capability is enabled.
+  component data directory. Claim-aware tasks use durable preparation, explicit
+  session admission and generation-bound reporting; unaccepted cards can retry.
+- Retain uncertain terminal reports for authoritative result reconciliation and
+  preserve task state, tokens, allowlists and execution bindings across upgrades.
 
 ## [0.3.4] - 2026-10-15
 

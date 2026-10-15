@@ -3,12 +3,16 @@
 
 import { execFile } from 'node:child_process';
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { storeTaskAttachments } from './lib/attachments.js';
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
-import { getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
+import { createTaskState } from './lib/task-state.js';
+import { createTaskDispatcher } from './lib/task-dispatch.js';
+import { createWorktreeManager } from './lib/worktrees.js';
+import { DATA_DIR, getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
 import { ensureWorkspaceResolved } from './lib/workspace.js';
 import { storeTaskContext, TaskContextError } from './lib/task-context.js';
@@ -100,6 +104,7 @@ export function validateRegisterContract(response, provider = 'zylos') {
 export function createBridge(initialConfig, dependencies = {}) {
   let config = initialConfig;
   let runtimeId;
+  let dispatcher;
   let backoffIndex = -1;
   let stopped = false;
   let wakeSleep;
@@ -154,7 +159,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       '--at', dueAt.toISOString(),
       '--name', `multica-task-${String(task.id)}`,
       '--reply-channel', 'multica',
-      '--reply-endpoint', String(task.id),
+      '--reply-endpoint', String(task.reply_endpoint ?? task.id),
     ]);
     if (!result.ok) {
       log('ERROR', 'scheduler add failed; falling back to direct C4 delivery', {
@@ -200,6 +205,10 @@ export function createBridge(initialConfig, dependencies = {}) {
       if (row.status !== 'failed') continue;
       const taskId = row.reply_endpoint;
       try {
+        if (taskId.includes('@')) {
+          await taskDispatcher().failScheduled(taskId, `scheduler handoff failed: ${String(row.last_error || 'unknown scheduler failure').slice(0, 300)}`);
+          continue;
+        }
         const taskStatus = await request(
           config,
           'GET',
@@ -305,8 +314,43 @@ export function createBridge(initialConfig, dependencies = {}) {
     return true;
   }
 
+  function taskDispatcher() {
+    if (dispatcher) return dispatcher;
+    const state = (dependencies.createTaskState ?? createTaskState)(config, { request });
+    const worktrees = (dependencies.createWorktreeManager ?? createWorktreeManager)({ config, lifecycle: state });
+    const pick = (value, fields) => Object.fromEntries(fields.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
+    dispatcher = createTaskDispatcher(config, {
+      state, worktrees, request, log,
+      root: dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'),
+      snapshot: async task => {
+        // Keep credentials only in the existing private token store. Prepared
+        // handoff snapshots contain explicit business fields, never agent env.
+        persistTaskToken(task.id, task.auth_token);
+        const context = (dependencies.storeTaskContext ?? storeTaskContext)(task, config);
+        const issue = task.issue_id ? await fetchIssue(task.issue_id) : null;
+        if (task.issue_id && !issue) throw new Error('issue context unavailable');
+        (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
+        const safeTask = pick(task, ['id', 'kind', 'workspace_id', 'agent_id', 'runtime_id', 'dispatched_at', 'issue_id', 'chat_session_id', 'thread_name', 'chat_message', 'chat_message_attachments', 'trigger_comment_id', 'trigger_comment_content', 'trigger_author_name', 'trigger_author_type', 'coalesced_comments', 'new_comment_count', 'handoff_note', 'attribution', 'is_leader_task', 'repos', 'project_resources']);
+        const dueAt = futureDueDate(issue, now());
+        return { task: safeTask, context, issue: pick(issue, ['id', 'identifier', 'title', 'description', 'due_at', 'attachments']), ...(dueAt ? { dueAt: dueAt.toISOString() } : {}) };
+      },
+      render: (entry, execution) => {
+        const routed = { ...entry.task, execution_generation: entry.generation, execution_bindings: execution?.bindings ?? [] };
+        return entry.task.chat_session_id ? buildChatCard(routed, entry.context) : buildTaskCard(routed, entry.issue, entry.context);
+      },
+      deliver: async (delivery, task) => {
+        if (delivery.dueAt && Date.parse(delivery.dueAt) > now()) {
+          if (await scheduleDelivery(delivery.content, { ...task, reply_endpoint: delivery.endpoint }, new Date(delivery.dueAt))) return true;
+        }
+        return deliverToC4(delivery.content, delivery.endpoint);
+      },
+    });
+    return dispatcher;
+  }
+
   async function handleTask(task) {
     if (task.kind === 'quick_create') return handleQuickCreate(task);
+    if (task.start_claim_supported === true) return taskDispatcher().enqueue(task);
 
     let context;
     if (task.chat_session_id || task.issue_id) {
@@ -429,6 +473,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
     await reconcileScheduledTasks();
+    if (dispatcher || fs.existsSync(dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'))) taskDispatcher().resume();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
       daemon_id: config.daemon_id,
       runtime_ids: [runtimeId],
@@ -441,6 +486,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   }
 
   function updateConfig(nextConfig) {
+    dispatcher?.stop(); dispatcher = undefined;
     config = nextConfig;
     runtimeId = undefined;
     // The socket may authenticate against stale credentials; drop it now and
@@ -451,6 +497,7 @@ export function createBridge(initialConfig, dependencies = {}) {
 
   function stop() {
     stopped = true;
+    dispatcher?.stop();
     wakeup.stop();
     wakeSleep?.();
   }

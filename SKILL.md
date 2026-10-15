@@ -23,6 +23,10 @@ lifecycle:
     - config.json
     - logs/
     - execution/
+    - task-state/
+    - task-tokens/
+    - task-downloads/
+    - dispatch-preparations/
 
 upgrade:
   repo: zylos-ai/zylos-multica
@@ -80,14 +84,54 @@ to reply in that thread. Post comments before completion or failure, because
 both remove the local task token. The follow-up card includes the scoped comment
 command; the CLI examples below show the general form.
 
-Use the supplemental reporter only for progress or failure:
+Use the supplemental reporter for progress, failure, or recovery of a pending result:
 
 ```bash
-node ~/zylos/.claude/skills/multica/scripts/report.js progress <task-id> "<status>"
-node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id> "<reason>"
+node ~/zylos/.claude/skills/multica/scripts/report.js progress <task-id@generation> "<status>"
+node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id@generation> "<reason>"
 ```
 
 Media replies are not supported in v0.2.21; send text instead.
+
+## Bound task execution and recovery
+
+Older cards with a plain task ID keep their original reply/progress/fail route;
+they do not use the bound execution helpers below.
+
+For cards containing `task_id@generation`, run the card's `task.js begin`
+command before doing any work. Continue only when it returns `accepted: true`;
+`accepted: false` means this delivery duplicates an already admitted task.
+A queued C4 message is not proof that the session accepted it. The bridge may
+redeliver an unaccepted card after 60 seconds with the same generation.
+
+Use the card's bound resource directories for edits. Run commands with
+`task.js exec <task-id@generation> <resource-id> -- <command> [args...]`;
+`task.js locate <task-id@generation> <resource-id>` returns the binding.
+These directories isolate work; they are not a permissions sandbox. A local
+repository worktree shares Git objects, refs and worktree registration with its
+source repository. Do not use a business source repository without authorization.
+
+Before final completion or failure, finish all task commands and native edits,
+then run `task.js quiesce <task-id@generation> --stopped`. This is an explicit
+acknowledgement that execution stopped; it cannot cancel a command running in
+another helper process. Unconfirmed commands retain their occupancy for recovery.
+Then use the attached C4 reply route for completion, or `report.js fail`.
+For multiple resources, include each directory, branch and result in the final
+text. A single resource supplies work_dir/branch metadata automatically; no
+replacement durable directory is inferred.
+
+When a terminal report is pending or uncertain, keep its original text and run
+`report.js reconcile <task-id@generation>`. The bridge also reconciles retained
+reports. Only authoritative matching platform results clear the task token.
+A clean committed, confirmed completion advances the workline for follow-ups;
+dirty output, failure and conflicts retain artifacts and require an explicit
+continuation choice. A changed claim for an existing task is held for recovery;
+it is not automatically admitted as a replacement generation.
+
+Runtime records stay in `components/multica`; repositories, worktrees and task
+materials stay in `workspace/multica`. They survive upgrades and are not cleaned
+up automatically. This bridge uses the existing live session and never launches
+an official Multica agent runtime.
 
 ## Task-scoped context
 

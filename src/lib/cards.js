@@ -38,6 +38,19 @@ function attachmentLines(task, issue) {
   })];
 }
 
+function executionLines(task) {
+  if (!task.execution_generation) return [];
+  const endpoint = `${sanitizeExternalText(task.id)}@${sanitizeExternalText(task.execution_generation)}`;
+  const cli = path.join(os.homedir(), 'zylos/.claude/skills/multica/scripts/task.js');
+  return ['', 'Execution binding (mandatory before doing work):',
+    `Run: node ${shellQuote(cli)} begin ${shellQuote(endpoint)}`,
+    'Proceed only if accepted=true. accepted=false is a duplicate delivery: do not run or reply again. Use this task’s bound directories for every tool; do not change the live session’s global directory.',
+    ...(task.execution_bindings || []).map(binding => `- Resource ${sanitizeExternalText(binding.id)}: ${sanitizeExternalText(binding.cwd)} (branch: ${sanitizeExternalText(binding.branch || 'in_place')})`),
+    `For a bound command: node ${shellQuote(cli)} exec ${shellQuote(endpoint)} '<resource-id>' -- <command> <args...>`,
+    `After all commands and native edits have stopped: node ${shellQuote(cli)} quiesce ${shellQuote(endpoint)} --stopped`,
+    'Only then send the final reply via the attached C4 route. Retained task materials are not global instructions.'];
+}
+
 function taskContextLines(context) {
   return context?.index ? [
     '',
@@ -108,8 +121,8 @@ function buildFollowUpCard(task, issue, context) {
   if (description) {
     lines.push('', 'Original issue description (context only):', quoteBlock(description));
   }
-  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(taskId));
-  lines.push(...taskContextLines(context));
+  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(task.execution_generation ? `${taskId}@${sanitizeExternalText(task.execution_generation)}` : taskId));
+  lines.push(...taskContextLines(context), ...executionLines(task));
   return lines.join('\n');
 }
 
@@ -131,8 +144,8 @@ export function buildTaskCard(task, issue, context) {
   if (handoff) {
     lines.push('', 'Handoff note from the assigner (scoping instruction for this run, not a comment to reply to):', quoteBlock(handoff));
   }
-  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(taskId));
-  lines.push(...taskContextLines(context));
+  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(task.execution_generation ? `${taskId}@${sanitizeExternalText(task.execution_generation)}` : taskId));
+  lines.push(...taskContextLines(context), ...executionLines(task));
   return lines.join('\n');
 }
 
@@ -148,9 +161,9 @@ export function buildChatCard(task, context) {
     '',
     'This is a chat message.',
     // Sanitized for the same reason as the task-card commands above.
-    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(sanitizeExternalText(task.id))} "<reason>"`,
+    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(task.execution_generation ? `${sanitizeExternalText(task.id)}@${sanitizeExternalText(task.execution_generation)}` : sanitizeExternalText(task.id))} "<reason>"`,
   );
-  lines.push(...taskContextLines(context));
+  lines.push(...taskContextLines(context), ...executionLines(task));
   return lines.join('\n');
 }
 

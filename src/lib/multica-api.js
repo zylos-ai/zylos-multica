@@ -13,7 +13,7 @@ export async function multicaRequest(config, method, apiPath, body, options = {}
       ...(options.workspaceHeader ? { 'X-Workspace-Id': config.workspace_id } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
   });
 
   const raw = await response.text().catch(() => '');

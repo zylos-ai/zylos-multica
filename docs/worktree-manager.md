@@ -1,7 +1,7 @@
 # Task worktree manager (#30)
 
 This is an integration module for the live-session bridge, not a runtime launcher.
-It is not wired into production claim processing and does not advertise
+The coordinator uses it for claim-aware task processing; it does not advertise
 `local-worktree-v1`. Local shared-Git metadata behavior remains subject to the
 owner's implementation choice; tests only use disposable fixture repositories.
 

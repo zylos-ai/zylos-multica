@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createTaskState } from '../src/lib/task-state.js';
 
 import {
   createBridge,
@@ -19,6 +23,76 @@ const config = {
   poll_interval_s: 15,
   runtime: { type: 'zylos', name: 'Jinglever (zylos)', version: '0.2.21' },
 };
+
+test('claim-aware bridge prepares safely and delivers generation-bound begin guidance after exact start', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-bridge-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const task = {
+    id: 'claim-task', issue_id: 'issue-1', workspace_id: config.workspace_id,
+    agent_id: 'agent-1', runtime_id: 'runtime-1',
+    dispatched_at: '2026-10-15T01:02:03.123456Z', start_claim_supported: true,
+    auth_token: 'mat_private_claim_token', agent_env: { PRIVATE_KEY: 'private-env-value' },
+  };
+  const events = [];
+  let state;
+  let deliveryArgs;
+  const request = async (_config, method, route, body) => {
+    if (route === '/api/issues/issue-1') return { id: 'issue-1', title: 'Normal task', auth_token: 'private-issue-token' };
+    assert.equal(method, 'POST');
+    if (route.endsWith('/prepare-lease')) {
+      events.push('lease');
+      return task;
+    }
+    assert.equal(route, `/api/daemon/tasks/${task.id}/start`);
+    assert.deepEqual(body, { runtime_id: task.runtime_id, dispatched_at: task.dispatched_at });
+    events.push('start');
+    return { ...task, status: 'running', dispatched_at: '2026-10-15T01:02:03Z' };
+  };
+  const bridge = createBridge(config, {
+    request, createWakeupChannel: () => noWakeup,
+    preparationRoot: path.join(root, 'preparations'),
+    createTaskState: (cfg, deps) => (state = createTaskState(cfg, { ...deps, root: path.join(root, 'state') })),
+    createWorktreeManager: () => ({
+      prepare: async (_task, _resources, { generation }) => {
+        assert.equal(generation, state.get(task.id).generation);
+        events.push('prepare');
+      },
+      inspect: () => ({ bindings: [{ id: 'repo', cwd: path.join(root, 'worktree'), branch: 'task-branch' }] }),
+    }),
+    storeTaskToken: (id, token) => {
+      assert.equal(id, task.id);
+      assert.equal(token, task.auth_token);
+    },
+    storeTaskContext: () => ({ index: path.join(root, 'context', 'index.md') }),
+    storeTaskAttachments: () => {},
+    runScript: async (script, args) => {
+      assert.ok(script.endsWith('/comm-bridge/scripts/c4-receive.js'));
+      assert.equal(state.get(task.id).start_confirmed, true);
+      deliveryArgs = args;
+      events.push('deliver');
+      return { ok: true, stdout: '{"ok":true}', stderr: '' };
+    },
+  });
+  t.after(() => bridge.stop());
+  assert.equal(await bridge.handleTask(task), true);
+  // Preparation runs asynchronously; wait only for this local handoff to settle.
+  for (let i = 0; i < 100 && !state.get(task.id).delivery?.delivered; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const record = state.get(task.id);
+  assert.equal(record.delivery?.delivered, true);
+  assert.deepEqual(events, ['lease', 'prepare', 'start', 'deliver']);
+  const endpoint = `${task.id}@${record.generation}`;
+  assert.equal(deliveryArgs[deliveryArgs.indexOf('--endpoint') + 1], endpoint);
+  assert.ok(deliveryArgs.at(-1).includes(`begin '${endpoint}'`));
+  assert.match(deliveryArgs.at(-1), /Proceed only if accepted=true/);
+  assert.ok(deliveryArgs.at(-1).includes(path.join(root, 'worktree')));
+  const snapshots = fs.readdirSync(path.join(root, 'preparations'));
+  assert.equal(snapshots.length, 1);
+  const snapshot = fs.readFileSync(path.join(root, 'preparations', snapshots[0]), 'utf8');
+  assert.doesNotMatch(snapshot, /mat_private_claim_token|private-env-value|private-issue-token|auth_token|agent_env/);
+  assert.equal(JSON.parse(snapshot).task.dispatched_at, task.dispatched_at);
+});
 
 test('register probe validates only the consumed runtime contract', () => {
   assert.equal(validateRegisterContract({

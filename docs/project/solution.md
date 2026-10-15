@@ -152,3 +152,15 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 #30附件目录按用途分离：下载材料归`~/zylos/workspace/multica/tasks/<task-id-sha256>/attachments/`；claim附件白名单作为运行授权记录，归`~/zylos/components/multica/task-downloads/<task-id-sha256>/attachments.json`。输出目录只能在该任务attachments目录内，不能覆盖运行记录。两者均跨代码升级保留，不搬动现有文件、不自动清理。
 
 上下文材料由任务卡携带本地索引，不额外保存组件侧pointer；材料跨代码升级保留，不搬动已有文件。
+
+## #30 活会话执行集成（当前增量，未发布）
+
+服务端返回 `start_claim_supported=true` 的普通任务、评论追问和聊天进入持久协调器：保存任务材料和精确 claim 身份 → 续租准备目录 → 以原 runtime/dispatched_at 确认 start → 投递固定卡片。卡片的 `task.js begin` 原子接收一次；投递成功但 60 秒未接收可重投，未来排期不提前重投。旧协议任务继续使用原回报路径。quick-create 保持原流程。
+
+终态先保存正文和原 generation；仅在执行停止后提交，并核对平台权威结果。响应不确定保留 pending，由 reconcile 回读；不把 HTTP 200、C4 入队或 session 接收等同业务完成。定时投递失败只允许原子停止尚未接收的任务，不能终止已接收工作。此契约取代本文早期“零本地状态”对新任务的描述。
+
+运行状态、任务 token、附件白名单、目录绑定与投递记录位于 `components/multica`，纳入标准 preserve；材料、仓库缓存和 worktree 位于 `workspace/multica`。工具命令使用明确绑定的 cwd，原生编辑由卡片要求遵循同一目录，不宣称权限沙箱。共享本地仓库会写 Git refs/对象/worktree 登记，业务源仓库使用仍需授权，当前不声明 local-worktree-v1。
+
+跨进程命令不能由另一 helper 自动取消；未确认退出时保持占用。现有任务换 claim、失败或脏交付的后续路径需明确恢复选择。仅确认完成且干净提交的工作线自动推进；不自动删除产物。
+
+Howard 最新要求以内部使用速度优先：保留本地回归与独立 CR，取消独立 OS 用户、完整可销毁 C4 会话和大套故障实验的交付门槛。现有协议/本地证据不等于真实活会话端到端验收；上线后按授权边用边验证。发布、合并和部署仍按原授权边界处理。
