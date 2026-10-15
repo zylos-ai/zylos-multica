@@ -1,0 +1,27 @@
+{
+  "output": "<fresh-output-directory>",
+  "probe": "local-worktree-cwd",
+  "passed": true,
+  "tasks": {
+    "a": {
+      "text": "task-a\n",
+      "artifact": "deliverable-a\n",
+      "branch": "probe-a",
+      "status": " M shared.txt\n?? artifact.txt\n"
+    },
+    "b": {
+      "text": "task-b\n",
+      "artifact": "deliverable-b\n",
+      "branch": "probe-b",
+      "status": " M shared.txt\n?? artifact.txt\n"
+    }
+  },
+  "sourceUnchanged": true,
+  "freshProcessReadback": true,
+  "badBindingRejected": true,
+  "limits": [
+    "Not a Multica claim/restart or C4 E2E test",
+    "Not permission sandbox enforcement",
+    "No production process was restarted"
+  ]
+}
