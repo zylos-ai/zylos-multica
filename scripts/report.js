@@ -1,28 +1,17 @@
 #!/usr/bin/env node
-/** Supplemental Multica progress/failure reporting interface. */
-
+/** Explicit progress/failure reporting and frozen terminal-result recovery. */
 import { getConfig } from '../src/lib/config.js';
-import { reportTask } from '../src/lib/multica-api.js';
-import { removeTaskToken } from '../src/lib/task-tokens.js';
+import { reportFromCLI } from '../src/lib/task-report.js';
 
-const [action, taskId, ...parts] = process.argv.slice(2);
-const text = parts.join(' ').trim();
-
-if (!['progress', 'fail'].includes(action) || !taskId || !text) {
-  console.error('Usage: report.js <progress|fail> <task_id> <text>');
+const [action, endpoint, ...parts] = process.argv.slice(2);
+const text = parts.join(' ');
+if (!['progress', 'fail', 'reconcile'].includes(action) || !endpoint || (action !== 'reconcile' && !text.trim()) || (action === 'reconcile' && parts.length)) {
+  console.error('Usage: report.js <progress|fail> <task_id@generation> <text> | report.js reconcile <task_id@generation>');
   process.exit(2);
 }
-
 try {
-  await reportTask(getConfig(), action, taskId, text);
-  if (action === 'fail') {
-    try {
-      removeTaskToken(taskId);
-    } catch (error) {
-      console.error(`WARNING: task ${taskId} failed but its local task token could not be removed: ${error.message}`);
-    }
-  }
-  console.log(`OK: task ${taskId} ${action} reported`);
+  await reportFromCLI(getConfig(), endpoint, action, text);
+  console.log(`OK: task ${endpoint} ${action} confirmed`);
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
   process.exit(1);

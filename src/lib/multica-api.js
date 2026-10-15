@@ -23,12 +23,16 @@ export async function multicaRequest(config, method, apiPath, body, options = {}
     error.status = response.status;
     throw error;
   }
-  if (response.status === 204 || raw === '') return null;
+  let data = null;
+  if (response.status === 204 || raw === '') {
+    return options.includeHeaders ? { data, headers: Object.fromEntries(response.headers) } : data;
+  }
   try {
-    return JSON.parse(raw);
+    data = JSON.parse(raw);
   } catch {
     throw new Error(`${method} ${apiPath} returned invalid JSON`);
   }
+  return options.includeHeaders ? { data, headers: Object.fromEntries(response.headers) } : data;
 }
 
 export function reportTask(config, action, taskId, text) {
