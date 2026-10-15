@@ -117,3 +117,23 @@ test('first-assignment card renders the handoff note after the issue body', () =
   const plain = buildTaskCard({ id: 'task-8' }, { title: 'T', description: 'body' });
   assert.doesNotMatch(plain, /Handoff note/);
 });
+
+
+test('cards leave reply instructions to C4 without promising automatic forwarding', () => {
+  const cards = [
+    buildChatCard({ id: 'chat-route', chat_session_id: 'session', chat_message: 'hello' }),
+    buildTaskCard({ id: 'task-route' }, { title: 'Task' }),
+    buildTaskCard({ id: 'followup-route', trigger_comment_id: 'comment', trigger_comment_content: 'follow up' }, { title: 'Task', identifier: 'TEST-1' }),
+  ];
+  for (const card of cards) {
+    assert.doesNotMatch(card, /C4|reply via:|assistant final response/);
+    assert.doesNotMatch(card, /Reply normally|a plain reply to this card|the reply will be completed back/);
+  }
+  assert.match(cards[0], /This is a chat message\./);
+  assert.match(cards[0], /report\.js' fail 'chat-route'/);
+  for (const [index, taskId] of [[1, 'task-route'], [2, 'followup-route']]) {
+    assert.match(cards[index], /If unfamiliar with task replies, see "Reply and task lifecycle" in ~\/zylos\/\.claude\/skills\/multica\/SKILL\.md; otherwise proceed/);
+    assert.ok(cards[index].includes(`progress '${taskId}' "<status>"`));
+    assert.ok(cards[index].includes(`fail '${taskId}' "<reason>"`));
+  }
+});
