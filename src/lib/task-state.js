@@ -1,5 +1,5 @@
 /** Durable local claim/report state. Execution occupancy belongs to worktree manager.
- * Requires util-linux flock; an OS lock dying is NOT proof execution has stopped.
+ * Uses an OS flock; an OS lock dying is NOT proof execution has stopped.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -53,12 +53,29 @@ export function atomicTaskWrite(file, value) {
     try { fs.unlinkSync(temp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   }
 }
+// macOS ships Perl with the flock syscall, but not the util-linux command.
+// Keep the helper alive on the parent's stdin pipe, just like the Linux helper.
+// The filename is an argv value, never interpolated into executable code.
+const darwinLock = String.raw`
+use strict;
+use warnings;
+use Fcntl qw(LOCK_EX);
+open(my $lock, '+<', $ARGV[0]) or die "cannot open task lock\n";
+flock($lock, LOCK_EX) or die "cannot acquire task lock\n";
+$| = 1;
+print "locked\n" or die "cannot acknowledge task lock\n";
+while (sysread(STDIN, my $buffer, 4096)) {}
+`;
+
 /** Parent EOF (including SIGKILL) releases flock, unlike a stale mkdir lock. */
 export async function withTaskLock(file, operation) {
   if (fs.existsSync(file) && !fs.lstatSync(file).isFile()) throw new Error('invalid task lock file');
   const fd = fs.openSync(file, fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
   fs.closeSync(fd);
-  const child = spawn('flock', ['-x', file, 'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const darwin = process.platform === 'darwin';
+  const child = darwin
+    ? spawn('/usr/bin/perl', ['-e', darwinLock, '--', file], { stdio: ['pipe', 'pipe', 'pipe'] })
+    : spawn('flock', ['-x', file, 'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
   // Failure details are intentionally generic: no external request or credentials.
   let held = false;
   let exited = false;
@@ -66,7 +83,9 @@ export async function withTaskLock(file, operation) {
   const completion = new Promise(resolve => child.once('close', () => { exited = true; resolve(); }));
   try {
     await new Promise((resolve, reject) => {
-      child.once('error', () => reject(new Error('task state locking requires flock')));
+      child.once('error', () => reject(new Error(darwin
+        ? 'task state locking requires /usr/bin/perl with Fcntl on macOS'
+        : 'task state locking requires flock')));
       child.once('close', () => { if (!held) reject(new Error('task state lock acquisition failed')); });
       child.stdout.once('data', data => {
         if (String(data).trim() !== 'locked') return reject(new Error('invalid task lock response'));

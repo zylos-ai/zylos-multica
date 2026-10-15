@@ -38,6 +38,11 @@ internals, or read `scheduler.db`.
 
 ## Install
 
+Task-state locking uses the OS file-lock mechanism: Linux requires the
+util-linux `flock` command; macOS uses `/usr/bin/perl` with its standard `Fcntl`
+module and does not require installing `flock`. The lock is released when the
+calling process exits; execution recovery still requires explicit stop proof.
+
 Due-date reconciliation requires a Zylos core that includes
 [zylos-core #762](https://github.com/zylos-ai/zylos-core/pull/762), specifically
 merge `e1b298f` or a later official core release. On older cores, ordinary
