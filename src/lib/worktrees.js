@@ -82,20 +82,31 @@ export function runGit(cwd, args, env = {}, { signal } = {}) {
     const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
       cwd, env: cleanGitEnv(env), detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '', size = 0, failed = false, stopping;
+    let stdout = '', stderr = '', size = 0, failed = false, stopping;
     const stopGroup = processStopper(child);
     const stop = () => { failed = true; stopping ??= stopGroup(); };
     const timeout = setTimeout(stop, 120_000);
     signal?.addEventListener('abort', stop, { once: true });
     child.stdout.on('data', (data) => { size += data.length; if (size > 16 * 1024 * 1024) stop(); else stdout += data; });
-    child.stderr.on('data', (data) => { size += data.length; if (size > 16 * 1024 * 1024) stop(); });
+    child.stderr.on('data', (data) => { size += data.length; if (size > 16 * 1024 * 1024) stop(); else if (stderr.length < 65536) stderr = (stderr + data).slice(0, 65536); });
     child.on('error', () => { failed = true; });
     // Do not release preparation ownership on the error/abort event: wait for
     // process exit and closed stdio, including Git's helpers in this group.
     child.on('close', async (code) => {
       clearTimeout(timeout); signal?.removeEventListener('abort', stop);
       if (!await (stopping || groupStopped(child.pid).catch(() => false))) { const error = new Error('Git process-group stop unconfirmed'); error.code = 'PROCESS_STOP_UNCONFIRMED'; reject(error); return; }
-      if (failed || code !== 0) reject(new Error(signal?.aborted ? 'Git preparation aborted' : 'git operation failed; inspect preserved task directory'));
+      if (failed || code !== 0) {
+        // Raw Git diagnostics can contain credentials. Retain only a fixed category.
+        const category = signal?.aborted ? 'aborted'
+          : /authentication failed|could not read (?:Username|Password)|permission denied|access denied|terminal prompts disabled|HTTP.*(?:401|403)/i.test(stderr) ? 'authentication required or denied'
+          : /repository .*not found|repository .*does not exist|repository not found|does not appear to be a git repository/i.test(stderr) ? 'repository unavailable'
+          : /couldn.t find remote ref|invalid ref|not a valid object|unknown revision|needed a single revision/i.test(stderr) ? 'invalid repository ref'
+          : /could not resolve|failed to connect|connection.*(?:reset|timed out|refused)|network is unreachable|TLS|SSL|HTTP.*50[234]/i.test(stderr) || failed ? 'network or timeout' : 'git operation failed';
+        const error = new Error(`preparation failed: ${category}`);
+        error.code = signal?.aborted ? 'PREPARATION_ABORTED' : ['authentication required or denied', 'repository unavailable', 'invalid repository ref'].includes(category) ? 'PREPARATION_PERMANENT' : 'PREPARATION_TRANSIENT';
+        error.preparationReason = category;
+        reject(error);
+      }
       else resolve(stdout.trimEnd());
     });
   });
@@ -333,7 +344,11 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
           }
           await checkBinding(binding, signal);
           binding.phase = 'prepared'; save(record);
-        } catch (error) { if (error.code === 'PROCESS_STOP_UNCONFIRMED') uncertainStop = true; throw error; }
+        } catch (error) {
+          if (error.code === 'PROCESS_STOP_UNCONFIRMED') uncertainStop = true;
+          error.preparationResource = /^[A-Za-z0-9_-]{1,128}$/.test(binding.id) ? binding.id : hash(binding.id);
+          throw error;
+        }
         finally { if (!uncertainStop) release(cacheKey, owner(task.id, generation)); }
       }
       signal?.throwIfAborted(); assert(task.id, generation);
@@ -417,6 +432,42 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
       return record;
     } finally { unlock(); }
   }
+  async function releasePreparation(taskId, generation) {
+    const state = lifecycle.get(taskId);
+    if (state?.generation !== generation || !state.preparation_failure || !state.execution.quiesced
+      || state.execution.accepted || state.delivery) throw new Error('preparation termination decision required');
+    // A live or interrupted operation cannot be inferred stopped from its PID/age.
+    directory(root);
+    return withTaskLock(path.join(root, `abandon-${taskKey(taskId)}.lock`), async () => {
+      const identity = { ...owner(taskId, generation), abandonment: true };
+      const held = read(opPath(taskId));
+      if (held && (!same(held, identity) || !held.abandonment)) throw new WorktreeBusyError('preparation operation active or interrupted');
+      if (!held) exclusive(opPath(taskId), identity);
+      try {
+        const existing = inspect(taskId);
+        if (!existing) return; // Invalid resources may fail before any binding exists.
+        const record = load(taskId, generation);
+        if (record.runtime_id !== state.runtime_id || record.dispatched_at !== state.dispatched_at
+          || record.commands.length || record.recovery || (record.recovery_input && record.recovery_input.state !== 'transferred')) throw new Error('preparation binding is not safely releasable');
+        if (!['preparing', 'prepared', 'abandoned'].includes(record.phase)) throw new Error('preparation is no longer releasable');
+        // Cache locks indicate an interrupted subprocess, even if its operation
+        // marker was removed externally. Never turn unknown stop into free capacity.
+        for (const binding of record.bindings) {
+          if (same(read(lockPath(`git-prepare-${hash(binding.repo)}`)), owner(taskId, generation))) {
+            throw new WorktreeBusyError('repository preparation stop is unconfirmed');
+          }
+        }
+        record.phase = 'abandoned'; record.execution.quiesced = true; save(record);
+        for (const binding of record.bindings) for (const key of [binding.line_key, binding.path_key].filter(Boolean)) {
+          if (same(read(lockPath(key)), owner(taskId, generation))) release(key, owner(taskId, generation));
+        }
+        return record;
+      } finally {
+        const held = read(opPath(taskId));
+        if (same(held, identity) && held.abandonment) fs.unlinkSync(opPath(taskId));
+      }
+    });
+  }
   async function confirmDelivery(taskId, generation) {
     const unlock = operation(taskId, generation);
     try {
@@ -467,7 +518,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
       if (target.report || target.execution.quiesced || target.execution.accepted || target.start_confirmed || target.start_unknown) throw new Error('continuation is no longer preparing');
       if (next.phase !== 'preparing' || next.commands.length || next.execution.quiesced) throw new Error('continuation binding is not preparing');
       if (next.recovery_input && next.recovery_input.id !== recoveryId) throw new Error('continuation has another recovery decision');
-      if (!record.bindings.length || record.bindings.length !== next.bindings.length || Object.keys(baselines).length !== record.bindings.length) throw new Error('recovery resource set mismatch');
+      if (!record.bindings.length || record.bindings.length > next.bindings.length || Object.keys(baselines).length !== record.bindings.length) throw new Error('recovery resource set mismatch');
       const locks = [];
       try {
         for (const [id, gen] of [[taskId, generation], [targetId, targetGeneration]]) {
@@ -538,5 +589,5 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
     }
     return record;
   }
-  return { prepare, inspect, locate, run, cancelCommands, quiesce, confirmDelivery, acknowledgeStopped, recover };
+  return { prepare, inspect, locate, run, cancelCommands, quiesce, confirmDelivery, acknowledgeStopped, recover, releasePreparation };
 }

@@ -25,7 +25,7 @@ function fixture(overrides = {}) {
   const deps = { state, request, root: path.join(root, 'dispatch'), leaseIntervalMs: 10, now,
     snapshot: async value => ({ task: value, context: { index: '/fixture/context' }, ...(overrides.dueAt ? { dueAt: overrides.dueAt } : {}) }),
     render: async () => 'fixed card',
-    worktrees: { prepare: async (_task, _resources, options) => { events.push('prepare'); await overrides.prepare?.(options); }, inspect: () => ({ bindings: [] }), quiesce: async () => { events.push('quiesce'); } },
+    worktrees: { prepare: async (_task, _resources, options) => { events.push('prepare'); await overrides.prepare?.(options); }, inspect: () => ({ bindings: [] }), quiesce: async () => { events.push('quiesce'); }, releasePreparation: async () => { events.push('release'); } },
     deliver: async () => { events.push('deliver'); return overrides.deliver ? overrides.deliver() : true; },
   };
   const make = () => createTaskDispatcher(config, deps);
@@ -143,4 +143,66 @@ test('scheduler failure loses admission race without quiescing or reporting the 
   assert.equal(f.events.includes('quiesce'), false);
   assert.equal(f.calls.some(c => c.route.endsWith('/fail')), false);
   assert.equal(f.state.get(task.id).execution.quiesced, false);
+});
+
+test('permanent preparation failure starts only to fail and never delivers; restart is idempotent', async () => {
+  const f = fixture({ prepare() { throw Object.assign(Error('secret raw diagnostic'), { code: 'PREPARATION_PERMANENT', preparationReason: 'authentication required or denied' }); } });
+  const d = f.make(); await d.enqueue(task); await d.drain();
+  const r = f.state.get(task.id);
+  assert.equal(r.report.state, 'confirmed');
+  assert.equal(r.report.payload.failure_reason, 'environment_prepare_failed');
+  assert.match(r.report.payload.error, /authentication required or denied/);
+  assert.equal(r.execution.quiesced, true);
+  assert.equal(r.delivery, undefined);
+  assert.deepEqual(f.events, ['lease', 'prepare', 'release', 'start', 'start', 'fail']);
+  const restarted = f.make(); restarted.resume(); await restarted.drain();
+  assert.equal(f.events.filter(e => e === 'fail').length, 1);
+  assert.equal(f.events.includes('deliver'), false);
+  await assert.rejects(f.state.markAccepted(task.id, r.generation), /frozen terminal|quiesced/);
+});
+test('transient preparation retries have durable exponential backoff and terminate after three attempts', async () => {
+  const f = fixture({ prepare() { throw Object.assign(Error('network'), { code: 'PREPARATION_TRANSIENT', preparationReason: 'network or timeout' }); } });
+  let d = f.make(); await d.enqueue(task); await d.drain();
+  assert.equal(f.state.get(task.id).report, null);
+  d = f.make(); d.resume(); await d.drain();
+  assert.equal(f.events.filter(e => e === 'prepare').length, 1);
+  f.advance(15_000); d.resume(); await d.drain();
+  f.advance(29_999); d.resume(); await d.drain();
+  assert.equal(f.events.filter(e => e === 'prepare').length, 2);
+  f.advance(1); d.resume(); await d.drain();
+  assert.equal(f.events.filter(e => e === 'prepare').length, 3);
+  assert.equal(f.state.get(task.id).report.state, 'confirmed');
+  assert.match(f.state.get(task.id).report.payload.error, /3 attempts/);
+});
+test('busy or unconfirmed-stop preparation remains waiting without spending retry budget', async () => {
+  for (const code of ['WORKTREE_BUSY', 'PROCESS_STOP_UNCONFIRMED']) {
+    const f = fixture({ prepare() { throw Object.assign(Error('waiting'), { code }); } });
+    const d = f.make(); await d.enqueue(task); await d.drain();
+    for (let i = 0; i < 4; i++) { f.advance(60_000); d.resume(); await d.drain(); }
+    assert.equal(f.state.get(task.id).report, null);
+    assert.equal(f.state.get(task.id).preparation_failure, undefined);
+    assert.equal(f.events.includes('release'), false);
+  }
+});
+test('C4 failures are handoff failures, never charged to preparation retry budget', async () => {
+  const f = fixture({ deliver: () => false }); const d = f.make();
+  await d.enqueue(task); await d.drain();
+  for (let i = 0; i < 4; i++) { f.advance(60_000); d.resume(); await d.drain(); }
+  assert.equal(f.events.filter(e => e === 'prepare').length, 1);
+  assert.equal(f.events.filter(e => e === 'deliver').length, 5);
+  assert.equal(f.state.get(task.id).report, null);
+});
+
+test('snapshot failure terminates without persisting raw claim or attempting Git preparation', async () => {
+  const f = fixture(); const record = await f.state.registerClaim(task);
+  const d = createTaskDispatcher({ base_url: 'https://example.test', workspace_id: 'workspace', daemon_id: 'daemon' }, {
+    state: f.state, root: path.join(f.root, 'dispatch'),
+    snapshot: async () => { throw Error('raw credential-secret'); },
+    worktrees: { releasePreparation: async () => {} },
+  });
+  await d.enqueue({ ...task, auth_token: 'credential-secret' }); await d.drain();
+  assert.equal(f.state.get(task.id).report.state, 'confirmed');
+  assert.equal(f.state.get(task.id).generation, record.generation);
+  assert.doesNotMatch(JSON.stringify(f.state.get(task.id)), /credential-secret/);
+  assert.equal(fs.readdirSync(path.join(f.root, 'dispatch')).length, 0);
 });

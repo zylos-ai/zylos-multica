@@ -315,6 +315,38 @@ export function createTaskState(config, options = {}) {
           execution: { accepted: false, quiesced: false }, report: null });
       });
     },
+    async abandonPreparation(taskId, generation, reason) {
+      string(reason, 'abandon reason');
+      if (reason.length > 1000) throw new Error('abandon reason exceeds 1000 characters');
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        if (record.preparation_failure) {
+          if (record.preparation_failure.reason !== reason) throw new Error('preparation failure reason is frozen');
+          return record;
+        }
+        if (record.execution.accepted || record.start_confirmed || record.start_unknown || record.delivery || record.report) {
+          throw new Error('abandon requires an unstarted, undelivered preparation');
+        }
+        // Fence every future begin/prepare before stopping or releasing resources.
+        record.preparation_failure = { reason, decided_at: new Date(now()).toISOString() };
+        record.execution.quiesced = true;
+        return save(record);
+      });
+    },
+    async startAbandonedPreparation(taskId, generation) {
+      return lock(taskId, async () => {
+        const record = current(taskId, generation);
+        if (!record.preparation_failure || !record.execution.quiesced || record.execution.accepted || record.delivery) {
+          throw new Error('no frozen prestart termination decision');
+        }
+        if (record.report) return record;
+        // This start authorizes only a terminal report, never session admission.
+        try { await startRequest(record); }
+        catch (error) { record.start_unknown = true; save(record); throw error; }
+        record.start_confirmed = true; record.start_unknown = false;
+        return save(record);
+      });
+    },
     async start(taskId, generation) {
       return lock(taskId, async () => {
         const record = assertCurrent({ taskId, generation });

@@ -126,15 +126,18 @@ node scripts/task.js recover <old-task-id@generation> \
   --baseline <resource-id>=<full-40-character-commit> --stopped
 ```
 
-Repeat `--baseline` for every resource. Both tasks must already have local
+Repeat `--baseline` for every resource in the **old** run. Both tasks must already have local
 bindings (the target's blocked preparation creates its binding). Select the old
 `base_commit` to restart from the original input, or an independently verified
 commit to carry forward committed work. No implicit “latest”, branch name, dirty
 snapshot, reset, stash, commit, deletion or push occurs. All old tracked edits,
 untracked/ignored files, directories, branches and commits stay in place. The
 old lifecycle report stays **confirmed fail**; normal confirmed delivery heads
-are not changed. This initial operation supports matching sets of **worktree**
-resources only; `in_place`, changed resources, same-task generation replacement,
+are not changed. Every old **worktree** resource must match a target resource by
+identity, source, mode, ref and workline; ordering is irrelevant. The target may
+add resources, including a private repository, which use normal preparation and
+host Git authentication. Additions need no old-run baseline. Removed/replaced
+shared resources, `in_place` shared resources, same-task generation replacement,
 unprepared source bindings and already-started targets are refused.
 
 The target must have the same workspace/daemon/agent and Issue or chat identity.
@@ -156,7 +159,10 @@ operation slots can be reclaimed under its OS mutex. An interrupted ordinary
 preparation is not reclassified as recovery. Do not delete locks manually.
 
 The bridge's next normal retry prepares a fresh directory/branch at the explicit
-commit, confirms the original claim, and delivers the normal task card. Recovery
+commit and prepares every added resource before confirming the original claim
+and delivering the normal task card. Added-resource failure follows the bounded
+preparation-failure policy below; only target-owned occupancy is released, and
+the old failed run and its artifacts stay unchanged. Recovery
 is not task admission; follow `begin` on that card as usual.
 
 Tests cover real local dispatcher/state/worktree execution against a controlled
@@ -165,3 +171,51 @@ controls, duplicate/concurrent calls, every recovery write boundary, and an
 actual SIGKILL with replay. They do not claim live Server/C4 acceptance, Piper
 host recovery or Git authentication verification; deployment and live recovery
 remain separate operator gates.
+
+
+## Failed preparation and operator abandon (#42)
+
+Git authentication/authorization, missing repositories and invalid refs fail
+immediately. Network/timeouts and unclassified preparation errors get at most
+three attempts with persisted minimum backoff of 15 then 30 seconds; the normal
+poll cadence may make delays longer. Backoff continues renewing preparation
+leases. Busy worklines, active/interrupted operations, unconfirmed subprocess
+stop, service shutdown and lease failure do not spend this budget. C4 handoff or
+start-confirmation errors keep their existing reconciliation path.
+
+Failure to materialize required task context terminates immediately: an
+incomplete context cannot be delivered safely, and raw claims containing tokens
+are never persisted as retry input. Retained context and task files remain for
+diagnosis. Git diagnostics are reduced to fixed reason categories and a safe
+resource identifier; raw stderr/URLs are not copied into reports or logs.
+
+An operator may terminate an unstarted, undelivered task explicitly:
+
+```sh
+node scripts/task.js abandon <task-id@generation> --reason 'preparation cannot proceed'
+```
+
+The reason is frozen; repeat the identical command after interruption. It first
+closes begin/preparation admission durably, then releases only exact-generation
+owned workline/path locks after acquiring the stopped preparation operation
+slot. Normally exited Git preparation has already released its cache lock.
+Active or interrupted operations and retained cache locks remain blocked until
+existing explicit stop verification/recovery is performed. Abandon never kills
+processes, deletes worktrees/branches/files, chooses a baseline, or clears another
+run's ownership. An identical completed abandonment remains idempotent even
+when later tasks own the workline. Pending recovery transfers must be replayed
+before abandonment; completed transfers can release only the target's ownership.
+
+After safe local release, the bridge uses the original claim-aware `start`
+solely to report `fail` with `environment_prepare_failed` (v0.6.2 nonretryable
+Server reason). It never delivers a card or admits execution. A lost/stale start
+or uncertain terminal response remains pending with the original claim and
+frozen reason. Existing fail reconciliation never blindly repeats an attempted
+fail POST. Local capacity can therefore be free while Server confirmation is
+still pending; inspect the lifecycle report before claiming remote completion.
+
+Durable intent, binding phase and marked abandonment operation slots allow
+restart replay after partial local release. Tests use actual Git, worktrees,
+CLI/HTTP fixtures and SIGKILL, including Core→Core+docs recovery and subsequent
+cycles. Private-repository transport and Server responses in integration tests
+are controlled fixtures, not live fleet acceptance.

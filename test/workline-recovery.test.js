@@ -5,10 +5,10 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import test from 'node:test';
 import { createTaskState, atomicTaskWrite } from '../src/lib/task-state.js';
-import { createWorktreeManager } from '../src/lib/worktrees.js';
+import { createWorktreeManager, runGit } from '../src/lib/worktrees.js';
 import { createTaskDispatcher } from '../src/lib/task-dispatch.js';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-async function fixture() {
+async function fixture(extra = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multica-recovery-')));
   const repo = path.join(root, 'repo'); fs.mkdirSync(repo);
   git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.test');
@@ -35,7 +35,7 @@ async function fixture() {
     throw Error('unexpected request');
   };
   const state = createTaskState(config, { root: path.join(root, 'state'), request, removeTaskToken() {} });
-  const options = { config, lifecycle: state, dataDir: path.join(root, 'execution'), workRoot: path.join(root, 'work') };
+  const options = { config, lifecycle: state, ...(extra.git ? { git: extra.git } : {}), dataDir: path.join(root, 'execution'), workRoot: path.join(root, 'work') };
   const manager = createWorktreeManager(options);
   const makeDispatcher = worktrees => createTaskDispatcher(config, { state, worktrees, request, root: path.join(root, 'dispatch'), snapshot: async value => ({ task: value }), render: async () => 'card', deliver: async (_card, value) => { delivered.push(value.id); return true; } });
   const dispatcher = makeDispatcher(manager);
@@ -45,7 +45,8 @@ async function fixture() {
   await manager.run('old', oldGen, 'repo', [process.execPath, '-e', "require('fs').writeFileSync('file','unfinished');require('fs').writeFileSync('untracked','keep');require('fs').writeFileSync('ignored','keep ignored')"]);
   await manager.quiesce('old', oldGen, { acknowledgedStopped: true }); await state.markQuiesced('old', oldGen);
   await state.report('old', oldGen, 'fail', { error: 'failed execution' });
-  await dispatcher.enqueue(task('next')); await dispatcher.drain();
+  const nextTask = task('next'); extra.target?.(nextTask);
+  await dispatcher.enqueue(nextTask); await dispatcher.drain();
   const nextGen = state.get('next').generation;
   const recover = (target = manager, overrides = {}) => target.recover('old', oldGen, 'next', nextGen, { acknowledgedStopped: true, baselines: { repo: base }, ...overrides });
   return { root, repo, base, state, manager, options, tasks, calls, delivered, oldGen, nextGen, recover, dispatcher, makeDispatcher };
@@ -166,4 +167,84 @@ test('a second manager cannot prepare the target while recovery verifies its lea
   try { await assert.rejects(f.manager.prepare(f.tasks.get('next'), undefined, { generation: f.nextGen }), /operation active/); }
   finally { release(); }
   assert.equal((await recovering).state, 'transferred');
+});
+
+function expandedTarget(task) {
+  task.repos = [{ url: 'https://private.example/docs.git' }];
+  // Insert ahead of the shared resource to exercise matching by identity, not index.
+  task.project_resources.unshift({ id: 'a-docs', resource_type: 'github_repo', resource_ref: { url: task.repos[0].url } });
+}
+function localDocsTransport({ fail = false } = {}) {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multica-docs-')));
+  git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.test');
+  fs.writeFileSync(path.join(repo, 'docs'), 'documentation'); git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'docs');
+  return async (cwd, args, env, options) => {
+    if (args[0] === 'clone') {
+      if (fail) throw Object.assign(Error('denied'), { code: 'PREPARATION_PERMANENT', preparationReason: 'authentication required or denied' });
+      const result = await runGit(cwd, [...args.slice(0, -2), repo, args.at(-1)], env, options);
+      await runGit(args.at(-1), ['remote', 'set-url', 'origin', args.at(-2)], env, options);
+      return result;
+    }
+    if (args[0] === 'fetch') return runGit(cwd, ['fetch', '--no-tags', repo, args.at(-1)], env, options);
+    return runGit(cwd, args, env, options);
+  };
+}
+test('recovery shared subset allows added private repo; both prepare before admission and old artifacts survive', async () => {
+  const f = await fixture({ target: expandedTarget, git: localDocsTransport() });
+  const old = f.manager.inspect('old'); const originalState = f.state.get('old');
+  assert.deepEqual(f.delivered, ['old']);
+  assert.equal((await f.recover()).state, 'transferred');
+  f.dispatcher.resume(); await f.dispatcher.drain();
+  assert.deepEqual(f.delivered, ['old', 'next']);
+  const next = f.manager.inspect('next');
+  assert.equal(next.bindings.length, 2); assert.ok(next.bindings.every(b => b.phase === 'prepared'));
+  assert.equal(fs.readFileSync(path.join(next.bindings.find(b => b.id === 'a-docs').cwd, 'docs'), 'utf8'), 'documentation');
+  assert.equal(fs.readFileSync(path.join(next.bindings.find(b => b.id === 'repo').cwd, 'file'), 'utf8'), 'original');
+  assert.equal(fs.readFileSync(path.join(old.bindings[0].cwd, 'file'), 'utf8'), 'unfinished');
+  assert.deepEqual(f.state.get('old'), originalState);
+  // A second cycle requires explicit baselines for BOTH now-existing resources.
+  await f.state.markAccepted('next', f.nextGen);
+  await f.manager.quiesce('next', f.nextGen, { acknowledgedStopped: true }); await f.state.markQuiesced('next', f.nextGen);
+  await f.state.report('next', f.nextGen, 'fail', { error: 'later failure' });
+  const third = { ...f.tasks.get('next'), id: 'third', status: 'dispatched' }; delete third.error;
+  f.tasks.set('third', third); await f.dispatcher.enqueue(third); await f.dispatcher.drain();
+  const gen = f.state.get('third').generation;
+  await f.manager.recover('next', f.nextGen, 'third', gen, { acknowledgedStopped: true,
+    baselines: Object.fromEntries(next.bindings.map(b => [b.id, b.base_commit])) });
+  f.dispatcher.resume(); await f.dispatcher.drain();
+  assert.equal(f.state.get('third').delivery.delivered, true);
+});
+test('added repo authentication failure terminates target and releases only target ownership after recovery', async () => {
+  const f = await fixture({ target: expandedTarget, git: localDocsTransport({ fail: true }) });
+  await f.recover(); const old = f.manager.inspect('old'); const oldState = f.state.get('old');
+  f.dispatcher.resume(); await f.dispatcher.drain();
+  assert.equal(f.state.get('next').report?.state, 'confirmed');
+  assert.equal(f.state.get('next').report.payload.failure_reason, 'environment_prepare_failed');
+  assert.equal(f.manager.inspect('next').phase, 'abandoned');
+  assert.deepEqual(f.delivered, ['old']);
+  assert.deepEqual(f.manager.inspect('old'), old); assert.deepEqual(f.state.get('old'), oldState);
+  assert.equal(fs.readFileSync(path.join(old.bindings[0].cwd, 'untracked'), 'utf8'), 'keep');
+  assert.deepEqual(fs.readdirSync(path.join(f.root, 'execution/owners')), []);
+});
+for (const mutation of ['missing', 'replaced']) test(`resource addition never permits ${mutation} shared binding`, async () => {
+  const f = await fixture({ target: expandedTarget, git: localDocsTransport() });
+  const dir = path.join(f.root, 'execution/bindings');
+  const name = fs.readdirSync(dir).find(name => JSON.parse(fs.readFileSync(path.join(dir, name))).task_id === 'next');
+  const record = JSON.parse(fs.readFileSync(path.join(dir, name)));
+  if (mutation === 'missing') record.bindings = record.bindings.filter(b => b.id !== 'repo');
+  else record.bindings.find(b => b.id === 'repo').line_key = 'other-line';
+  atomicTaskWrite(path.join(dir, name), record);
+  await assert.rejects(f.recover(), /resource\/baseline mismatch|resource set/);
+  assert.equal(f.manager.inspect('old').recovery, undefined);
+});
+test('resource addition remains replayable after transfer writes fail', async () => {
+  const f = await fixture({ target: expandedTarget, git: localDocsTransport() }); let writes = 0;
+  const interrupted = createWorktreeManager({ ...f.options, persist(file, value) {
+    atomicTaskWrite(file, value); if (++writes === 3) throw Error('interrupted transfer');
+  } });
+  await assert.rejects(f.recover(interrupted), /interrupted/);
+  assert.equal((await f.recover()).state, 'transferred');
+  f.dispatcher.resume(); await f.dispatcher.drain();
+  assert.equal(f.state.get('next').delivery.delivered, true);
+  assert.ok(f.manager.inspect('next').bindings.every(b => b.phase === 'prepared'));
 });
