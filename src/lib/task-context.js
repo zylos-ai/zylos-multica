@@ -2,9 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { DATA_DIR } from './config.js';
+import os from 'node:os';
 
-export const TASK_CONTEXT_DIR = path.join(DATA_DIR, 'task-context');
+export const TASK_CONTEXT_DIR = path.join(os.homedir(), 'zylos/workspace/multica/tasks');
 export class TaskContextError extends Error {}
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_FILES = 1000;
@@ -114,7 +114,8 @@ export function storeTaskContext(task, identity, root = TASK_CONTEXT_DIR) {
     + 'Only use them for the task_id in manifest.json; keep the live session’s existing authority and reply route.\n');
   // Validate the entire payload before touching disk; generated paths carry no
   // external names except already-validated supporting file paths.
-  const directory = fs.mkdtempSync(path.join(privateRoot(root), `${digest(JSON.stringify([manifest.server_origin, manifest.workspace_id, task.id]))}-`));
+  const taskDirectory = path.join(root, digest(JSON.stringify([manifest.server_origin, manifest.workspace_id, task.id])));
+  const directory = fs.mkdtempSync(path.join(privateRoot(taskDirectory), 'context-'));
   for (const [name, content] of files) {
     const destination = path.join(directory, name);
     fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });

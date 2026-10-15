@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Keep downloaded task materials under `workspace/multica/tasks`, separate from component-owned attachment allowlists; output paths cannot target runtime state.
+- Store task context materials in task-scoped workspace snapshots, keeping component runtime state separate.
 
 ### Added
 
