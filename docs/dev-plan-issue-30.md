@@ -1,6 +1,6 @@
 # #30：v0.6.2 执行能力实施计划
 
-状态：首轮 review 已认可四项方向、目录/分支隔离及最小本地状态。附件/评论反馈独立实施中；恢复/worktree 在下面补充契约 review 后实施。尚未进行真实平台验收。
+状态：首轮 review 已认可四项方向、目录/分支隔离及最小本地状态。附件/评论反馈独立实施中；恢复/worktree 主体契约第二轮 review 已通过，按下面收口规则实施。尚未进行真实平台验收。
 
 基线：组件 v0.3.4 / `21ce159`；官方服务端 v0.6.2 / `7ab92d7622ecd81d179a8d83ae2dea74835a5069`。本轮覆盖任务闭环与恢复、附件与项目上下文、评论触发反馈、worktree 四项，不包含发布部署授权。
 
@@ -119,7 +119,7 @@ worktree 与“daemon 协议 → C4 → Zylos 活会话”可以兼容，不需�
 
 ## Review 补充 B：工作线身份、占用和恢复
 
-“工作线”只标识可以续接的历史，不等于一个永久复用的可写目录。**每个 task 始终使用独立目录和独立分支；同工作线后续任务复用已确认提交作为基线，不复用上一轮的物理目录/分支。** 这样晚到的旧执行即使还向旧目录写，也不会直接写进新任务目录。
+“工作线”只标识可以续接的历史，不等于一个永久复用的可写目录。**worktree 模式下每个 task 使用独立目录和独立分支；同工作线后续任务复用已确认提交作为基线，不复用上一轮的物理目录/分支。in_place 模式保持声明资源的真实路径，按真实路径排他占用，不另建 worktree。** 这样晚到的旧执行即使还向旧目录写，也不会直接写进新任务目录。
 
 身份：`lineKey = hash(serverOrigin, workspaceId, agentId, conversationKind, conversationId, resourceId, canonicalRepoIdentity)`。conversationKind 为 issue/chat/task；有 issue 用完整 issue UUID，chat用session UUID，无关联则task UUID；不使用标题、短identifier或资源标签。resource身份变更即新工作线。任务绑定主键为来源+workspace+完整taskID+resourceID，重派child是新task，不冒用parent绑定。
 
@@ -187,3 +187,42 @@ worktree 与“daemon 协议 → C4 → Zylos 活会话”可以兼容，不需�
 - 可控HTTP故障代理用于请求未送达、服务端提交后响应丢失；只截测试实例流量。浏览器测试登录或对应测试人配合提供聊天/任务展示证据。
 
 在这些资源可用前继续mock HTTP、CLI子进程和本机文件系统测试；不得将它们写成真实平台验收。
+
+
+## 第二轮收口与目录职责（Howard 最新指示）
+
+第二轮计划 review 已认可恢复/worktree 主体实施契约。start 成功但响应丢失时，prepare-lease 会因已有 started_at 被拒；此拒绝不能直接判 claim 失效。用**原始精确 claim** 重试 claim-aware start：同代 running 可确认，409 则拒绝执行，响应不明保持待对账。start 确认后停止准备续租。complete 无服务端 claim fencing 的限制不变，本地互斥不承诺跨客户端原子性。
+
+目录遵循现有职责：工作内容在 workspace，组件运行数据在 components/multica。此前全部放 components 的临时提议已撤回。不新增 Zylos 顶层目录、不改变 core/C4/session 布局、不移动既有业务仓库。
+
+| 内容 | 标准位置（相对 ~/zylos） | 生命周期 |
+|---|---|---|
+| 组件代码、skill、CLI、hooks | .claude/skills/multica/ | 标准 zylos component 安装/升级；不把业务产物写进代码目录 |
+| 配置、任务 token | components/multica/config.json、task-tokens/ | 私有权限；仅确认终态后清理失效 token |
+| task generation、start/执行确认、冻结 pending 和回读凭据 | components/multica/task-state/ | 跨进程/升级保留；不以重启为新任务 |
+| 任务→资源/cwd/branch 绑定、占用、运行命令、确认提交头 | components/multica/execution/{bindings,operations,owners,heads}/ | 跨升级保留；不因 PID/TTL/cancelled 自动释放 |
+| 附件允许清单 | components/multica/task-downloads/<task-hash>/attachments.json | 运行授权记录；不混入正文和凭据 |
+| 下载的附件内容 | workspace/multica/tasks/<task-hash>/attachments/ | 工作材料；不自动删除或覆盖 |
+| 上下文、instructions、inline skills 及支持文件 | workspace/multica/tasks/<来源-workspace-task-hash>/context-<snapshot>/ | 工作材料，仅当前 task 适用，不全局安装 |
+| 受控 repo cache | workspace/multica/repos/<repo-hash>/ | 工作仓库；不移入组件代码目录 |
+| worktree、快照专用临时 index、未提交产物 | workspace/multica/tasks/<task-hash>/<generation-hash>/<resource-hash>/ | 独立任务工作区，保留待交付材料，不自动清理 |
+| in_place 工作区 | 平台明确声明的既有本地真实路径 | 外部资源，非组件所有，不搬动/自动清理 |
+
+路径 hash 使用完整稳定身份，不能以外部标题直接拼路径。上表子路径会与最终实现逐项核对；workspace 的任务工作路径由绑定记录定位，不能靠猜目录恢复。
+
+升级保留：运行数据与工作内容均在 skill 代码目录之外；lifecycle.data_dir 保持 components/multica，preserve 显式列出配置、日志、task-tokens、task-state、task-downloads、execution 等运行子目录。workspace 工作材料不靠复制进 skill 备份保留，升级 hooks 不迁移/删除它们。测试须覆盖升级 hooks 前后绑定、pending、下载和工作产物仍存在。不存在自动 worktree remove/reset/gc 或业务仓库搬迁。
+
+### local_directory：原仓库影响与待决定取舍
+
+以下是临时测试仓库中的实现评估，不是对业务仓库的写入授权；该选择尚未由 Howard 定案。
+
+| 项目 | 直接共享原仓库 Git 元数据 | 组件受控副本 |
+|---|---|---|
+| 原工作区源码/未跟踪文件 | 准备时只读，任务在独立 worktree 修改 | 准备时只读，任务在副本 worktree 修改 |
+| 原 .git/index | 不修改；快照用 workspace 中独立 GIT_INDEX_FILE | 不修改 |
+| 原 Git 对象库 | 写入脏工作区快照的 blob/tree/commit | 新对象只写受控副本；需把源内容与所需历史复制进去 |
+| 原 refs | 新建 zylos/task 专用分支，可在原仓库直接发现 | 分支只在副本；交付回原仓库需显式 fetch/import/push |
+| 原 .git/worktrees | git worktree add 登记新工作区及其 HEAD/index 等元数据 | 登记仅在受控副本 |
+| 空间/同步成本 | 共用对象较省；原仓库存在元数据变化 | 对象/快照额外占空间，源变更与交付有同步成本 |
+
+建议：先向 Howard 展示上述实际影响再决定 local_directory 后端；不把“工作区文件未改”说成“原仓库完全未变”。GitHub 来源仍使用受控仓库。当前临时仓库实验可继续，但不得根据此比较扩大实现范围或写业务仓库；若要求原 .git 也完全只读，必须采用受控副本并单独落实该实现，不能假称共享 worktree 满足要求。
