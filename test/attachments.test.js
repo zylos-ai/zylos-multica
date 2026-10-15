@@ -211,6 +211,40 @@ test('bridge persists claim attachment allowlist before delivering either card; 
   }
 });
 
+test('issue context fetch failure leaves task dispatched; redispatch delivers all attachments before start', async () => {
+  const { createBridge } = await import('../src/index.js');
+  const events = [];
+  let fail = true;
+  const bridge = createBridge({ base_url: 'https://example.test', workspace_id: 'ws' }, {
+    createWakeupChannel: () => ({ start() {}, stop() {}, supported: () => false }),
+    storeTaskToken: () => events.push('token'),
+    storeTaskAttachments: (_task, issue) => {
+      events.push('manifest');
+      if (issue) assert.equal(issue.attachments[0].id, 'att');
+    },
+    request: async (_config, method, route) => {
+      events.push(`${method} ${route}`);
+      if (route === '/api/issues/issue') {
+        if (fail) throw new Error('temporary issue GET failure');
+        return { title: 'Issue', attachments: [{ id: 'att', filename: 'required.txt' }] };
+      }
+      return {};
+    },
+    runScript: async (_script, args) => {
+      events.push('deliver');
+      if (!fail) assert.match(args.at(-1), /attachment download 'att' --task 'task'/);
+      return { ok: true, stdout: '', stderr: '' };
+    },
+  });
+  const task = { id: 'task', issue_id: 'issue', workspace_id: 'ws', auth_token: 'mat_test' };
+  assert.equal(await bridge.handleTask(task), false);
+  assert.deepEqual(events, ['token', 'GET /api/issues/issue']);
+  fail = false;
+  events.length = 0;
+  assert.equal(await bridge.handleTask(task), true);
+  assert.deepEqual(events, ['token', 'GET /api/issues/issue', 'manifest', 'deliver', 'POST /api/daemon/tasks/task/start']);
+});
+
 test('relative URLs retain authentication; HTTP denial is explicit without retry or response leakage', async (t) => {
   const f = fixture(t);
   let requests = 0;
