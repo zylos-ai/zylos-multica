@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
+### Fixed
+
 - Keep command occupancy when background process-group members survive a normal
   shell exit, and exclude overlapping parent/child in-place directories atomically.
 - Preserve server failure classification for omitted/empty reasons so transient
@@ -16,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Store task context materials in task-scoped workspace snapshots, keeping component runtime state separate.
 
 ### Added
+
+- Distinguish saved comments from queued, coalesced, deferred, steered and blocked
+  agent-trigger outcomes in table output, preserving the JSON response.
 
 - Task-scoped `attachment download` with claimed-ID checks, binary streaming,
   a 100 MiB cap, credential-safe redirects, and contained non-overwriting files.
