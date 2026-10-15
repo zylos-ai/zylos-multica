@@ -239,3 +239,6 @@ Development-time architecture notes live in [docs/DESIGN.md](./docs/DESIGN.md).
 ## License
 
 [MIT](./LICENSE)
+
+Failed runs can explicitly transfer a workline to a verified continuation while
+preserving all artifacts and the failed result. See [recovery instructions](docs/worktree-manager.md#explicit-failed-run-recovery-39); no automatic cleanup or live recovery occurs.

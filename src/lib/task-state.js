@@ -277,6 +277,25 @@ export function createTaskState(config, options = {}) {
         return record.origin === origin && record.workspace_id === workspace ? get(record.task_id) : null;
       }).filter(Boolean);
     },
+    async withRecovery(sourceId, sourceGeneration, targetId, targetGeneration, operation) {
+      if (sourceId === targetId) throw new Error('recovery requires a distinct continuation task');
+      const ids = [sourceId, targetId].sort();
+      return lock(ids[0], () => lock(ids[1], async () => {
+        const source = current(sourceId, sourceGeneration);
+        const target = current(targetId, targetGeneration);
+        if (source.report?.state !== 'confirmed' || source.report.action !== 'fail' || !source.execution.quiesced) {
+          throw new Error('recovery requires confirmed failed and stopped source');
+        }
+        if (source.agent_id !== target.agent_id || source.issue_id !== target.issue_id
+          || source.chat_session_id !== target.chat_session_id || (!source.issue_id && !source.chat_session_id)) {
+          throw new Error('continuation identity mismatch');
+        }
+        return operation({ source, target, async validateTarget() {
+          const remote = await request(config, 'POST', `/api/daemon/runtimes/${encodeURIComponent(target.runtime_id)}/tasks/${encodeURIComponent(targetId)}/prepare-lease`, {}, { timeoutMs: 10_000 });
+          if (!identity(target, remote) || remote.runtime_id !== target.runtime_id || !['dispatched', 'waiting_local_directory'].includes(remote.status)) throw new Error('continuation preparing lease is not valid');
+        } });
+      }));
+    },
     async registerClaim(task) {
       const id = string(task.id, 'task_id');
       for (const field of ['agent_id', 'runtime_id', 'dispatched_at']) string(task[field], field);

@@ -44,7 +44,8 @@ objects stay unchanged.
 
 `createWorktreeManager({config,lifecycle,dataDir?,workRoot?,git?})` requires the
 lifecycle API's synchronous `assertCurrent({taskId,generation,requireRunning})`
-and `get(taskId)`. The coordinator registers the immutable generation; this
+and `get(taskId)`; explicit recovery also requires `withRecovery` for paired
+lifecycle locking and existing prepare-lease validation. The coordinator registers the immutable generation; this
 manager never invents or replaces it.
 
 - `await prepare(task, resources?, {generation,signal})` resolves claim resources
@@ -93,8 +94,8 @@ manager never invents or replaces it.
 
 Git preparation is asynchronous, has a 120-second operation timeout and accepts
 coordinator cancellation. The coordinator's 15-second lease timer must remain
-active through preparation and generation-aware start. This module does not call
-platform start/claim/lease APIs itself. Only the coordinator may enable executable
+active through preparation and generation-aware start. Normal preparation does not call platform start/claim/lease APIs itself;
+explicit recovery validates a preparation lease through the lifecycle provider. Only the coordinator may enable executable
 C4 delivery after start is confirmed. `worktree-cli.js` exports the parsing helper
 for coordinator wiring (`locate`, `exec`, `quiesce`, `inspect`); it does not add a
 standalone runtime or service.
@@ -108,3 +109,59 @@ repo cache resolution and CLI cwd. Timer/cancellation tests cover nonblocking Gi
 preparation. These are local fixtures, not live Multica/C4 E2E acceptance. Source
 contracts: pinned v0.6.2 `daemon/local_directory.go`, `execenv/local_worktree.go`,
 `handler/project_resource.go:430–461`. No capability/version changes are made.
+
+## Explicit failed-run recovery (#39)
+
+Use this only after the operator has verified **both execution and preparation
+are stopped** for the failed run and the target continuation. Stop proof includes
+native edits, background helpers and registered commands; `--stopped` acknowledges
+that proof, it does not stop processes. Ordinary active/interrupted operation or
+Git preparation slots are rejected, never cleared by this command.
+
+```sh
+node scripts/task.js inspect <old-task-id>
+node scripts/task.js inspect <target-task-id>
+node scripts/task.js recover <old-task-id@generation> \
+  --to <target-task-id@generation> \
+  --baseline <resource-id>=<full-40-character-commit> --stopped
+```
+
+Repeat `--baseline` for every resource. Both tasks must already have local
+bindings (the target's blocked preparation creates its binding). Select the old
+`base_commit` to restart from the original input, or an independently verified
+commit to carry forward committed work. No implicit “latest”, branch name, dirty
+snapshot, reset, stash, commit, deletion or push occurs. All old tracked edits,
+untracked/ignored files, directories, branches and commits stay in place. The
+old lifecycle report stays **confirmed fail**; normal confirmed delivery heads
+are not changed. This initial operation supports matching sets of **worktree**
+resources only; `in_place`, changed resources, same-task generation replacement,
+unprepared source bindings and already-started targets are refused.
+
+The target must have the same workspace/daemon/agent and Issue or chat identity.
+A fresh existing `prepare-lease` call checks its remote runtime/identity and
+preparing status. The exact original claim's microsecond timestamp is still
+checked by the normal Server `start` call after preparation: recovery does not
+start a task or bypass admission. No new Server endpoint is required. A remote
+claim can change after the lease check; normal start then refuses execution.
+
+`recover()` takes the two lifecycle locks, a recovery OS mutex and both task
+operation slots. It validates every resource/owner/baseline before writing a
+recovery decision into the old binding. It then records target baselines and a
+pending gate, atomically replaces owner records (never leaving an unlocked gap),
+marks the old decision transferred, and finally unblocks target preparation.
+Writes fsync data and directory entries. Exact retries are idempotent; changed
+choices are rejected. A crash retains the decision and all content. Replay the
+**identical command** after confirming stopped work; only this recovery's marked
+operation slots can be reclaimed under its OS mutex. An interrupted ordinary
+preparation is not reclassified as recovery. Do not delete locks manually.
+
+The bridge's next normal retry prepares a fresh directory/branch at the explicit
+commit, confirms the original claim, and delivers the normal task card. Recovery
+is not task admission; follow `begin` on that card as usual.
+
+Tests cover real local dispatcher/state/worktree execution against a controlled
+Server request fixture, dirty artifact retention, commit selection, rejection
+controls, duplicate/concurrent calls, every recovery write boundary, and an
+actual SIGKILL with replay. They do not claim live Server/C4 acceptance, Piper
+host recovery or Git authentication verification; deployment and live recovery
+remain separate operator gates.

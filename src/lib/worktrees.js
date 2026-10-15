@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { withTaskLock } from './task-state.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const string = (value, label) => {
@@ -28,6 +29,8 @@ function write(file, value) {
   const fd = fs.openSync(temp, 'wx', 0o600);
   try { fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
+  const parent = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
 }
 function exclusive(file, value) {
   directory(path.dirname(file));
@@ -145,7 +148,7 @@ export function resolveExecutionResources(task, config) {
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos/components/multica/execution'), workRoot = path.join(os.homedir(), 'zylos/workspace/multica'), config, lifecycle, git = runGit }) {
+export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos/components/multica/execution'), workRoot = path.join(os.homedir(), 'zylos/workspace/multica'), config, lifecycle, git = runGit, persist = write }) {
   if (!lifecycle?.assertCurrent) throw new Error('worktree manager requires lifecycle admission gate');
   const invokeGit = git;
   const root = path.resolve(dataDir);
@@ -169,10 +172,10 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
   function inspect(taskId) { return read(recordPath(taskId)); }
   function load(taskId, generation) {
     const record = inspect(taskId);
-    if (!record || record.generation !== generation) throw new Error('worktree binding generation mismatch');
+    if (!record || record.task_id !== taskId || record.generation !== generation) throw new Error('worktree binding generation mismatch');
     return record;
   }
-  function save(record) { write(recordPath(record.task_id), record); }
+  function save(record) { persist(recordPath(record.task_id), record); }
   function acquire(keys, identity, paths = new Map()) {
     const created = [];
     // Serialize overlap inspection + publication across all manager processes.
@@ -259,6 +262,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
       if (record && record.generation !== generation) throw new Error('existing task generation cannot be replaced');
       const resourceDigest = hash(resources);
       if (record && record.resource_digest !== resourceDigest) throw new Error('execution resources changed for existing task');
+      if (record?.recovery_input?.state === 'pending') throw new WorktreeBusyError('recovery decision requires replay');
       if (record?.phase === 'prepared') { for (const binding of record.bindings) await checkBinding(binding, signal); return record; }
       if (record && record.phase !== 'preparing') throw new Error('task directory is quiesced or awaiting delivery');
       if (!record) {
@@ -301,18 +305,19 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
             if (fs.realpathSync(binding.repo) !== binding.repo || await git(binding.repo, ['rev-parse', '--is-bare-repository']) !== 'true'
               || await git(binding.repo, ['remote', 'get-url', 'origin']) !== binding.source) throw new Error('controlled repository cache identity mismatch');
           }
-          if (binding.type === 'github_repo' && !binding.base_commit) {
+          if (binding.type === 'github_repo' && !binding.base_commit && !binding.recovery_base) {
             await git(binding.repo, ['fetch', '--no-tags', 'origin', binding.ref]);
           }
           binding.common_dir = fs.realpathSync(await git(binding.repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
           if (!binding.base_commit) {
-            const captured = binding.type === 'local_directory' ? await snapshot(binding.repo, binding.task_root, signal)
+            const captured = binding.recovery_base ? { commit: binding.recovery_base, tree: binding.recovery_source_tree }
+              : binding.type === 'local_directory' ? await snapshot(binding.repo, binding.task_root, signal)
               : { commit: await git(binding.repo, ['rev-parse', '--verify', 'FETCH_HEAD^{commit}']), tree: null };
             const head = read(headPath(binding.line_key));
-            if (head && binding.type === 'local_directory' && head.source_tree !== captured.tree) {
+            if (!binding.recovery_base && head && binding.type === 'local_directory' && head.source_tree !== captured.tree) {
               throw new Error('source changed since confirmed delivery; explicit baseline selection required');
             }
-            binding.base_commit = head?.commit || captured.commit;
+            binding.base_commit = binding.recovery_base || head?.commit || captured.commit;
             binding.source_snapshot = captured.commit;
             binding.snapshot_ref = `refs/zylos/snapshots/${taskKey(task.id)}/${hash([binding.id, generation, captured.commit])}`;
             await git(binding.repo, ['update-ref', binding.snapshot_ref, captured.commit]);
@@ -438,6 +443,82 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
       return record;
     } finally { unlock(); }
   }
+  /** Explicit transfer; the old failed execution and its artifacts are immutable.
+   * The lifecycle locks serialize against begin/report, operation slots against
+   * prepare/exec. A recovery-only OS lock lets a crashed recovery reclaim ONLY
+   * its own marked operation slots; ordinary interrupted preparation stays busy.
+   */
+  async function recover(taskId, generation, targetId, targetGeneration, { acknowledgedStopped = false, baselines } = {}) {
+    if (!acknowledgedStopped) throw new Error('explicit execution and preparation stop acknowledgement required');
+    if (!baselines || typeof baselines !== 'object' || Array.isArray(baselines)) throw new Error('explicit baselines required');
+    for (const commit of Object.values(baselines)) if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('baseline must be an exact commit SHA');
+    const choice = { task_id: taskId, generation, target_id: targetId, target_generation: targetGeneration,
+      baselines: Object.fromEntries(Object.entries(baselines).sort(([a], [b]) => a.localeCompare(b))) };
+    const recoveryId = hash(choice);
+    directory(root);
+    return withTaskLock(path.join(root, 'recovery.lock'), () => lifecycle.withRecovery(taskId, generation, targetId, targetGeneration, async ({ source, target, validateTarget }) => {
+      const record = load(taskId, generation);
+      if (record.recovery && record.recovery.id !== recoveryId) throw new Error('conflicting recovery decision');
+      const next = load(targetId, targetGeneration);
+      if (record.runtime_id !== source.runtime_id || record.dispatched_at !== source.dispatched_at
+        || next.runtime_id !== target.runtime_id || next.dispatched_at !== target.dispatched_at) throw new Error('binding claim identity mismatch');
+      if (record.recovery?.state === 'transferred' && next.recovery_input?.id === recoveryId && next.recovery_input.state === 'transferred') return record.recovery;
+      if (!record.execution.quiesced || record.commands.some(command => !['exited', 'stopped_confirmed'].includes(command.status))) throw new Error('source execution stop is unconfirmed');
+      if (target.report || target.execution.quiesced || target.execution.accepted || target.start_confirmed || target.start_unknown) throw new Error('continuation is no longer preparing');
+      if (next.phase !== 'preparing' || next.commands.length || next.execution.quiesced) throw new Error('continuation binding is not preparing');
+      if (next.recovery_input && next.recovery_input.id !== recoveryId) throw new Error('continuation has another recovery decision');
+      if (!record.bindings.length || record.bindings.length !== next.bindings.length || Object.keys(baselines).length !== record.bindings.length) throw new Error('recovery resource set mismatch');
+      const locks = [];
+      try {
+        for (const [id, gen] of [[taskId, generation], [targetId, targetGeneration]]) {
+          const identity = { ...owner(id, gen), recovery: recoveryId };
+          const existing = read(opPath(id));
+          if (existing && (!same(existing, identity) || existing.recovery !== recoveryId)) throw new WorktreeBusyError('execution or preparation operation is active or interrupted');
+          if (!existing) exclusive(opPath(id), identity);
+          locks.push([id, identity]);
+        }
+        if (record.recovery?.state === 'transferred') {
+          if (next.recovery_input?.id !== recoveryId) throw new Error('continuation recovery record mismatch');
+          next.recovery_input.state = 'transferred'; persist(recordPath(targetId), next);
+          return record.recovery;
+        }
+        await validateTarget();
+        for (const binding of record.bindings) {
+          const destination = next.bindings.find(item => item.id === binding.id);
+          if (!destination || destination.line_key !== binding.line_key || binding.mode !== 'worktree'
+            || destination.base_commit || destination.phase !== 'preparing' || !baselines[binding.id]) throw new Error('continuation resource/baseline mismatch (worktree mode required)');
+          if (fs.existsSync(destination.worktree)) throw new Error('continuation already has a worktree');
+          if (read(lockPath(`git-prepare-${hash(binding.repo)}`))) throw new WorktreeBusyError('repository preparation stop is unconfirmed');
+          const held = read(lockPath(binding.line_key));
+          if (!same(held, owner(taskId, generation)) && !(record.recovery && same(held, owner(targetId, targetGeneration)))) throw new Error('workline ownership mismatch');
+          await checkBinding(binding);
+          if (await invokeGit(binding.repo, ['rev-parse', '--verify', `${baselines[binding.id]}^{commit}`]) !== baselines[binding.id]) throw new Error('baseline commit not verified');
+          destination.recovery_base = baselines[binding.id];
+          destination.recovery_source_tree = binding.source_tree;
+        }
+        // A durable decision precedes every ownership mutation. Target remains
+        // non-executable until every line is transferred and replay completes.
+        record.recovery ??= { ...choice, id: recoveryId, state: 'pending', decided_at: new Date().toISOString() };
+        persist(recordPath(taskId), record);
+        next.recovery_input = { id: recoveryId, source_id: taskId, source_generation: generation, state: 'pending' };
+        persist(recordPath(targetId), next);
+        for (const binding of record.bindings) {
+          const held = read(lockPath(binding.line_key));
+          if (!same(held, owner(taskId, generation)) && !same(held, owner(targetId, targetGeneration))) throw new Error('workline ownership changed');
+          // Replacement has no unlocked interval in which a third run can win.
+          persist(lockPath(binding.line_key), owner(targetId, targetGeneration));
+        }
+        record.recovery.state = 'transferred'; persist(recordPath(taskId), record);
+        next.recovery_input.state = 'transferred'; persist(recordPath(targetId), next);
+        return record.recovery;
+      } finally {
+        for (const [id, identity] of locks) {
+          const held = read(opPath(id));
+          if (same(held, identity) && held.recovery === recoveryId) fs.unlinkSync(opPath(id));
+        }
+      }
+    }));
+  }
   // Explicit recovery acknowledgement is required: an old bridge's subprocess
   // may still be running. Never infer termination from a PID, TTL or cancel.
   function acknowledgeStopped(taskId, generation, { acknowledgedStopped = false } = {}) {
@@ -445,6 +526,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
     if (activeOperations.has(taskKey(taskId))) throw new WorktreeBusyError('this manager still tracks an active task operation');
     const record = load(taskId, generation);
     const existing = read(opPath(taskId));
+    if (existing?.recovery) throw new WorktreeBusyError('replay the recorded recovery; do not clear its operation slot');
     if (existing && !same(existing, owner(taskId, generation))) throw new Error('operation owner mismatch');
     for (const command of record.commands) if (!['exited', 'stopped_confirmed'].includes(command.status)) command.status = 'stopped_confirmed';
     save(record);
@@ -456,5 +538,5 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
     }
     return record;
   }
-  return { prepare, inspect, locate, run, cancelCommands, quiesce, confirmDelivery, acknowledgeStopped };
+  return { prepare, inspect, locate, run, cancelCommands, quiesce, confirmDelivery, acknowledgeStopped, recover };
 }
