@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-15
+
+### Fixed
+
+- Remove misleading automatic-forwarding instructions from chat, task, and
+  follow-up cards; reply routing remains supplied by C4 (#27, #28).
+
+### Documentation
+
+- Centralize final completion, progress/failure, and issue-comment guidance in
+  the skill. Task cards point unfamiliar agents to that section without
+  requiring familiar agents to reread it.
+
 ## [0.3.3] - 2026-08-26
 
 ### Fixed
