@@ -232,7 +232,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         workspaceHeader: true,
       });
     } catch (error) {
-      log('WARN', 'issue fetch failed; using task thread name only', { issue_id: issueId, error: error.message });
+      log('WARN', 'issue fetch failed; leaving task dispatched for server-side redispatch', { issue_id: issueId, error: error.message });
       return null;
     }
   }
@@ -354,6 +354,9 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
 
     const issue = await fetchIssue(task.issue_id);
+    // Issue context includes the attachment allowlist. A failed read must not
+    // turn into an apparently successful handoff with missing attachments.
+    if (!issue) return false;
     (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
     const card = buildTaskCard(task, issue);
     const dueAt = futureDueDate(issue, now());
