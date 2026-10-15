@@ -5,20 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-16
 
-- Deliver resources to the Agent without component Git preparation; Agent chooses repository access and working directories.
-- Preserve task admission, stopped acknowledgement and exact result reconciliation; accept explicit Agent execution metadata.
-- Retain legacy files and reports, migrate unaccepted cards with original content preserved, and retire bound exec/locate/recover commands. See docs/agent-owned-resources.md.
+### Changed
+
+- Deliver task resources without component-managed Git preparation. Agents choose
+  authorized repository access and working directories after task admission;
+  missing local Git credentials no longer block task delivery.
+- Retire `task.js exec`, `locate`, and `recover`. Use native Agent tools and
+  acknowledge stopped work with `quiesce --stopped`; optional execution metadata
+  records the actual directory, branch, and PR. Upstream protocol capability
+  reporting remains unchanged.
+- Preserve admission, exact result reconciliation, old files and reports. Replace
+  unaccepted cards with Agent-owned instructions while preserving their originals;
+  accepted tasks are not automatically restarted. Confirmed failures require new
+  continuation tasks. See [upgrade and migration guidance](docs/agent-owned-resources.md).
 
 ### Fixed
 
-- Bound preparation retries, classify Git failures without exposing diagnostics,
-  preserve files while releasing stopped owned occupancy, and provide an
-  idempotent `task.js abandon` path for unstarted tasks.
-- Allow explicit failed-run recovery when the continuation adds repositories;
-  preserve exact shared-resource identity and explicit baselines, and prepare all
-  additions before start/admission. Added-resource failure uses safe termination.
+- Preserve frozen preparation failures and uncertain terminal reports for
+  reconciliation. Allow explicit, idempotent abandonment of unstarted,
+  undelivered tasks only after confirming previous work has stopped.
+
+### Upgrade notes
+
+- Stop old service/helper processes and Agent work before activating this version.
+  Historical Git bindings and operation records are retained; they are not new
+  directory ownership guarantees. Local regression tests do not establish that a
+  newly dispatched production task can access its repositories and complete work.
 
 ## [0.4.2] - 2026-10-15
 
