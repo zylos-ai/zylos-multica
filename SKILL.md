@@ -90,6 +90,14 @@ Media replies are not supported in v0.2.21; send text instead.
 
 ## Business CLI
 
+For `issue comment add --output table`, a successful save is reported separately
+from each explicit mention's trigger outcome (`queued`, `coalesced`, `deferred`,
+`steered`, or `blocked`), with target IDs and reason codes. Queued does not mean
+execution completed, and steered does not verify delivery. Missing/empty outcomes
+mean not reported, not that nobody was triggered; implicit triggers may be absent.
+Unknown statuses and reasons remain visible. A blocked target does not undo the
+saved comment: do not retry the write. JSON output retains the full server receipt.
+
 Quick-create tasks are translated directly into one issue after task validation:
 the bridge starts the task, creates exactly one issue with origin and pre-uploaded
 attachment IDs, then completes the task. It never retries the non-idempotent

@@ -339,6 +339,34 @@ function printTable(value, stdout) {
   }
 }
 
+// A successful POST saves the comment independently of mention admission.
+// Missing receipts do not prove that no implicit trigger occurred.
+function printCommentReceipt(result, stdout) {
+  stdout.write('Comment saved. Trigger outcomes describe explicit mentions, not all implicit triggers.\n');
+  const { trigger_outcomes: outcomes, ...comment } = result ?? {};
+  printTable(comment, stdout);
+  if (!Array.isArray(outcomes) || outcomes.length === 0) {
+    stdout.write('Trigger outcomes not reported; whether a target was triggered is unknown.\n');
+    return;
+  }
+  const meanings = new Map([
+    ['queued', 'new task queued; execution not completed'],
+    ['coalesced', 'combined with an existing pending run'],
+    ['deferred', 'admitted but not started'],
+    ['steered', 'bound to a running turn; delivery not verified'],
+    ['blocked', 'trigger refused; comment remains saved; do not retry the comment'],
+  ]);
+  for (const outcome of outcomes) {
+    printTable({
+      target_type: outcome?.target_type ?? '(not reported)',
+      target_id: outcome?.target_id ?? '(not reported)',
+      status: outcome?.status ?? '(not reported)',
+      reason_code: outcome?.reason_code ?? '(not reported)',
+      meaning: meanings.get(outcome?.status) ?? 'unknown trigger outcome; no success or failure inferred',
+    }, stdout);
+  }
+}
+
 export async function runBusinessCLI(config, argv, dependencies = {}) {
   const request = dependencies.request ?? multicaRequest;
   const readTaskToken = dependencies.loadTaskToken ?? loadTaskToken;
@@ -376,7 +404,8 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);
   else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ...');
 
-  if (response.output === 'table') printTable(response.result, io.stdout);
+  if (response.output === 'table' && isCommentAdd) printCommentReceipt(response.result, io.stdout);
+  else if (response.output === 'table') printTable(response.result, io.stdout);
   else io.stdout.write(`${JSON.stringify(response.result, null, 2)}\n`);
   return response.result;
 }
