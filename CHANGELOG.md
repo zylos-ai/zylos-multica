@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Explicit failed-run worktree recovery with exact task/generation and baseline
+  selection, stopped-work checks, durable replay and idempotent ownership transfer.
+  Preserve old artifacts and failed state; reuse existing Server lease/start APIs.
+
 ## [0.4.1] - 2026-10-15
 
 ### Fixed

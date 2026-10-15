@@ -8,7 +8,8 @@ import { createWorktreeManager } from '../src/lib/worktrees.js';
 
 const [action, endpoint, resourceId, ...args] = process.argv.slice(2);
 try {
-  const { taskId, generation } = parseTaskEndpoint(endpoint);
+  const { taskId, generation } = action === 'inspect' && endpoint && !endpoint.includes('@')
+    ? { taskId: endpoint } : parseTaskEndpoint(endpoint);
   const config = getConfig();
   if (!config.workspace_id) await ensureWorkspaceResolved(config);
   const state = createTaskState(config);
@@ -28,7 +29,22 @@ try {
   } else if (action === 'quiesce' && resourceId === '--stopped' && !args.length) {
     result = await manager.quiesce(taskId, generation, { acknowledgedStopped: true });
     await state.markQuiesced(taskId, generation);
-  } else throw new Error('Usage: task.js <begin|locate|exec|quiesce> <task@generation> [resource -- command args | --stopped]');
+  } else if (action === 'recover' && resourceId === '--to') {
+    const destination = parseTaskEndpoint(args[0]);
+    const baselines = {};
+    let stopped = false;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === '--stopped' && !stopped) { stopped = true; continue; }
+      if (args[i] !== '--baseline' || !args[i + 1]) throw new Error('use --baseline resource=exact-commit and --stopped');
+      const match = /^([^=]+)=([0-9a-f]{40})$/.exec(args[++i]);
+      if (!match || Object.hasOwn(baselines, match[1])) throw new Error('invalid or duplicate baseline');
+      Object.defineProperty(baselines, match[1], { value: match[2], enumerable: true });
+    }
+    result = await manager.recover(taskId, generation, destination.taskId, destination.generation, { acknowledgedStopped: stopped, baselines });
+  } else if (action === 'inspect' && !resourceId) {
+    result = manager.inspect(taskId);
+    if (!result || (generation && result.generation !== generation)) throw new Error('worktree binding generation mismatch');
+  } else throw new Error('Usage: task.js <begin|locate|exec|quiesce|inspect|recover> <task@generation> [resource -- command args | --stopped | --to task@generation --baseline resource=commit --stopped]');
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(`FAILED: ${error.message}`);

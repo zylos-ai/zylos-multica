@@ -132,6 +132,19 @@ dirty output, failure and conflicts retain artifacts and require an explicit
 continuation choice. A changed claim for an existing task is held for recovery;
 it is not automatically admitted as a replacement generation.
 
+For a confirmed failed run, explicit worktree recovery is available only after
+operator authorization and independent execution/preparation stop verification:
+`task.js recover <old-task@generation> --to <target-task@generation>
+--baseline <resource-id>=<full-commit-SHA> --stopped` (one baseline per resource).
+Use `task.js inspect <task-id>` to read bindings/generations. Select the original
+baseline or a verified commit explicitly. Old files, branches and failed status
+are retained. Matching worktree resources and an unstarted continuation are
+required; in_place and changed claims/resources are refused. Replay the identical
+command after interruption; never delete occupancy records or report completion
+to bypass failure. See `docs/worktree-manager.md` for stop proof and replay rules.
+The target resumes normal preparation/start/card admission; recovery does not
+admit business work or grant merge/release/deployment permission.
+
 Runtime records stay in `components/multica`; repositories, worktrees and task
 materials stay in `workspace/multica`. They survive upgrades and are not cleaned
 up automatically. This bridge uses the existing live session and never launches
