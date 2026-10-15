@@ -5,18 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { runBusinessCLI } from '../src/lib/business-cli.js';
-import { storeTaskAttachments, taskDownloadDirectory, MAX_DOWNLOAD_BYTES } from '../src/lib/attachments.js';
+import { storeTaskAttachments, taskDownloadDirectory, taskManifestDirectory, DOWNLOAD_ROOT, MANIFEST_ROOT, MAX_DOWNLOAD_BYTES } from '../src/lib/attachments.js';
 import { buildChatCard, buildTaskCard } from '../src/lib/cards.js';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-attachments-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const task = { id: 'task-a', workspace_id: 'ws', chat_message_attachments: [{ id: 'att-a', filename: 'binary.dat' }] };
-  storeTaskAttachments(task, undefined, root);
+  const manifestRoot = path.join(root, 'runtime');
+  storeTaskAttachments(task, undefined, manifestRoot);
   const calls = [];
   let output = '';
   const config = { base_url: 'https://multica.example', workspace_id: 'ws', pat: 'owner-must-not-be-used' };
-  const dependencies = { downloadRoot: root, loadTaskToken: () => 'mat_test', stdout: { write: (v) => { output += v; } },
+  const dependencies = { downloadRoot: path.join(root, 'workspace'), manifestRoot, loadTaskToken: () => 'mat_test', stdout: { write: (v) => { output += v; } },
     fetch: async (url, options) => {
       calls.push({ url: String(url), ...options });
       return String(url).includes('/api/attachments/')
@@ -25,7 +26,7 @@ function fixture(t) {
     },
   };
   const run = (extra = []) => runBusinessCLI(config, ['attachment', 'download', 'att-a', '--task', 'task-a', ...extra], dependencies);
-  return { root, task, config, calls, dependencies, run, output: () => output };
+  return { root: path.join(root, 'workspace'), manifestRoot, task, config, calls, dependencies, run, output: () => output };
 }
 
 test('task-scoped download preserves binary bytes, JSON/table output and no overwrite', async (t) => {
@@ -91,27 +92,27 @@ test('invalid URL, downgrade, metadata mismatch and unsafe filename fail without
     ? Response.json({ id: 'att-a', filename: 'ok', download_url: '/bytes' })
     : new Response(null, { status: 302, headers: { location: 'http://multica.example/plain' } });
   await assert.rejects(f.run(), /downgrades/);
-  assert.deepEqual(fs.readdirSync(path.join(taskDownloadDirectory('task-a', f.root), 'files')), []);
+  assert.deepEqual(fs.readdirSync(taskDownloadDirectory('task-a', f.root)), []);
 });
 
 test('traversal, symlink parent/manifest/destination and existing file are rejected', async (t) => {
   const f = fixture(t);
   const taskDir = taskDownloadDirectory('task-a', f.root);
+  fs.mkdirSync(taskDir, { recursive: true });
   await assert.rejects(f.run(['--output-dir', '../outside']), /inside/);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
   fs.symlinkSync(outside, path.join(taskDir, 'escape'));
   await assert.rejects(f.run(['--output-dir', 'escape']), /symlinks/);
   assert.equal(f.calls.length, 0);
-  fs.mkdirSync(path.join(taskDir, 'files'));
-  fs.symlinkSync(path.join(outside, 'missing'), path.join(taskDir, 'files', 'binary.dat'));
+  fs.symlinkSync(path.join(outside, 'missing'), path.join(taskDir, 'binary.dat'));
   await assert.rejects(f.run(), /already exists/);
   assert.deepEqual(fs.readdirSync(outside), []);
   const other = { ...f.task, id: 'task-b' };
-  storeTaskAttachments(other, undefined, f.root);
-  const b = taskDownloadDirectory('task-b', f.root);
+  storeTaskAttachments(other, undefined, f.manifestRoot);
+  const b = taskManifestDirectory('task-b', f.manifestRoot);
   fs.unlinkSync(path.join(b, 'attachments.json'));
-  fs.symlinkSync(path.join(taskDir, 'attachments.json'), path.join(b, 'attachments.json'));
+  fs.symlinkSync(path.join(taskManifestDirectory('task-a', f.manifestRoot), 'attachments.json'), path.join(b, 'attachments.json'));
   await assert.rejects(runBusinessCLI(f.config, ['attachment', 'download', 'att-a', '--task', 'task-b'], f.dependencies), /manifest/);
 });
 
@@ -132,7 +133,7 @@ test('100 MiB streaming limit is inclusive; excessive headers/stream leave no pa
   }
   f.dependencies.fetch = async (url) => String(url).includes('/api/attachments/') ? metadata() : new Response(stream(1));
   await assert.rejects(f.run(), /100 MiB/);
-  const directory = path.join(taskDownloadDirectory('task-a', f.root), 'files');
+  const directory = taskDownloadDirectory('task-a', f.root);
   assert.deepEqual(fs.readdirSync(directory), []);
   f.dependencies.fetch = async (url) => String(url).includes('/api/attachments/') ? metadata() : new Response(stream(0));
   const result = await f.run();
@@ -146,7 +147,7 @@ test('transport failures hide credentials and signed URLs, partial files are rem
     return new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); c.error(new Error('mat_test secret=signature')); } }));
   };
   await assert.rejects(f.run(), (e) => !e.message.includes('mat_test') && !e.message.includes('signature'));
-  assert.deepEqual(fs.readdirSync(path.join(taskDownloadDirectory('task-a', f.root), 'files')), []);
+  assert.deepEqual(fs.readdirSync(taskDownloadDirectory('task-a', f.root)), []);
 });
 
 test('real HTTP metadata and cross-origin redirect preserve bytes and isolate credentials', async (t) => {
@@ -256,5 +257,18 @@ test('relative URLs retain authentication; HTTP denial is explicit without retry
   };
   await assert.rejects(f.run(), /^Error: attachment download HTTP 403$/);
   assert.equal(requests, 2);
-  assert.deepEqual(fs.readdirSync(path.join(taskDownloadDirectory('task-a', f.root), 'files')), []);
+  assert.deepEqual(fs.readdirSync(taskDownloadDirectory('task-a', f.root)), []);
+});
+
+test('downloaded work content and runtime allowlist occupy separate roots', async (t) => {
+  const f = fixture(t);
+  const result = await f.run();
+  assert.equal(DOWNLOAD_ROOT, path.join(os.homedir(), 'zylos/workspace/multica/tasks'));
+  assert.equal(MANIFEST_ROOT, path.join(os.homedir(), 'zylos/components/multica/task-downloads'));
+  assert.equal(result.path, path.join(taskDownloadDirectory('task-a', f.root), 'binary.dat'));
+  assert.deepEqual(fs.readdirSync(taskManifestDirectory('task-a', f.manifestRoot)), ['attachments.json']);
+  assert.deepEqual(fs.readdirSync(taskDownloadDirectory('task-a', f.root)), ['binary.dat']);
+  const before = f.calls.length;
+  await assert.rejects(f.run(['--output-dir', taskManifestDirectory('task-a', f.manifestRoot)]), /inside/);
+  assert.equal(f.calls.length, before);
 });

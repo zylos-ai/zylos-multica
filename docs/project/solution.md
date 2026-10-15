@@ -149,3 +149,4 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 每份材料位于component data的`task-context/<generated snapshot>/`，目录0700、文件0600；技能用生成的编号目录，支持文件保留相对层级。拒绝绝对路径、路径穿越、symlink目录、重名/文件目录冲突、校验和不一致及超过10 MiB/1000文件的快照。先完整验证，再写材料；所有文件完成才交出索引。失败不交付、不start；失败时可能留下未引用的部分目录，保留用于诊断，不自动删除。重复claim生成新快照，不覆盖旧材料。
 
 只取上下文字段，不复制task token、agent custom_env/runtime_config/MCP配置；资源清单为原始外部业务数据，不自动执行。服务端repos优先级保持原样，不重新合并workspace repo。非空skill_refs明确拒绝；不声明skill-bundles-v1，不安装全局技能。此切片只覆盖材料交付，平台恢复/worktree/prepare lease契约仍属独立切片；真实平台验收尚未完成。
+#30附件目录按用途分离：下载材料归`~/zylos/workspace/multica/tasks/<task-id-sha256>/attachments/`；claim附件白名单作为运行授权记录，归`~/zylos/components/multica/task-downloads/<task-id-sha256>/attachments.json`。输出目录只能在该任务attachments目录内，不能覆盖运行记录。两者均跨代码升级保留，不搬动现有文件、不自动清理。

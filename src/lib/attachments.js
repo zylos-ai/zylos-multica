@@ -1,12 +1,18 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { DATA_DIR } from './config.js';
 
-export const DOWNLOAD_ROOT = path.join(DATA_DIR, 'task-downloads');
+export const MANIFEST_ROOT = path.join(DATA_DIR, 'task-downloads');
+export const DOWNLOAD_ROOT = path.join(os.homedir(), 'zylos/workspace/multica/tasks');
 export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 
 export function taskDownloadDirectory(taskId, root = DOWNLOAD_ROOT) {
+  return path.join(taskManifestDirectory(taskId, root), 'attachments');
+}
+
+export function taskManifestDirectory(taskId, root = MANIFEST_ROOT) {
   return path.join(root, crypto.createHash('sha256').update(taskId).digest('hex'));
 }
 
@@ -35,10 +41,10 @@ export function taskAttachments(task, issue) {
     .filter((item) => item && typeof item.id === 'string' && item.id.trim());
 }
 
-export function storeTaskAttachments(task, issue, root = DOWNLOAD_ROOT) {
+export function storeTaskAttachments(task, issue, root = MANIFEST_ROOT) {
   const attachments = taskAttachments(task, issue);
   if (!attachments.length) return;
-  const directory = secureDirectory(taskDownloadDirectory(task.id, root));
+  const directory = secureDirectory(taskManifestDirectory(task.id, root));
   const destination = path.join(directory, 'attachments.json');
   const content = JSON.stringify({ task_id: task.id, workspace_id: task.workspace_id, attachment_ids: [...new Set(attachments.map((item) => item.id))] });
   // Exclusive creation prevents a forged symlink from being followed. Replayed
@@ -63,12 +69,13 @@ function checkedURL(value, base) {
 export async function downloadAttachment(config, { taskId, attachmentId, taskToken, outputDir }, dependencies = {}) {
   const root = dependencies.downloadRoot ?? DOWNLOAD_ROOT;
   const directory = taskDownloadDirectory(taskId, root);
-  const destinationDir = outputDir === undefined ? path.join(directory, 'files') : path.resolve(directory, outputDir);
+  const manifestDirectory = taskManifestDirectory(taskId, dependencies.manifestRoot ?? MANIFEST_ROOT);
+  const destinationDir = outputDir === undefined ? directory : path.resolve(directory, outputDir);
   if (!inside(directory, destinationDir)) throw new Error('--output-dir must stay inside this task download directory');
-  secureDirectory(directory);
+  secureDirectory(manifestDirectory);
   let manifest;
   try {
-    const fd = fs.openSync(path.join(directory, 'attachments.json'), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const fd = fs.openSync(path.join(manifestDirectory, 'attachments.json'), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     try { manifest = JSON.parse(fs.readFileSync(fd, 'utf8')); } finally { fs.closeSync(fd); }
   } catch { throw new Error('no readable attachment manifest for this task; use an attachment from its task card'); }
   if (manifest.task_id !== taskId || !manifest.attachment_ids?.includes(attachmentId)) throw new Error('attachment is not listed for this task');
