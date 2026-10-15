@@ -57,6 +57,10 @@ dependencies:
 
 # Multica
 
+Task-state locking requires util-linux `flock` on Linux, or the system
+`/usr/bin/perl` with standard `Fcntl` on macOS. macOS does not need the `flock`
+command. Losing a lock does not prove that task execution has stopped.
+
 Requires a Zylos core containing zylos-core #762 (merge `e1b298f`) or a later
 official core release for scheduler `list --json` due-date reconciliation.
 Older cores keep ordinary Multica delivery available but log a reconciliation
