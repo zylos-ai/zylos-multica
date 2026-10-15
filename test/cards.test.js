@@ -123,7 +123,7 @@ test('cards leave reply instructions to C4 without promising automatic forwardin
   const cards = [
     buildChatCard({ id: 'chat-route', chat_session_id: 'session', chat_message: 'hello' }),
     buildTaskCard({ id: 'task-route' }, { title: 'Task' }),
-    buildTaskCard({ id: 'followup-route', trigger_comment_id: 'comment', trigger_comment_content: 'follow up' }, { title: 'Task' }),
+    buildTaskCard({ id: 'followup-route', trigger_comment_id: 'comment', trigger_comment_content: 'follow up' }, { title: 'Task', identifier: 'TEST-1' }),
   ];
   for (const card of cards) {
     assert.doesNotMatch(card, /C4|reply via:|assistant final response/);
