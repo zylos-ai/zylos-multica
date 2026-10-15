@@ -4,10 +4,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { parseTaskEndpoint } from './task-report.js';
 import { atomicTaskWrite } from './task-state.js';
+import { abandonPreparation, preparationFailure } from './preparation-failure.js';
 
 export function createTaskDispatcher(config, {
   state, worktrees, request, snapshot, render, deliver, root,
-  leaseIntervalMs = 15_000, redeliveryMs = 60_000, now = Date.now, log = () => {},
+  leaseIntervalMs = 15_000, redeliveryMs = 60_000, preparationRetryMs = 15_000, now = Date.now, log = () => {},
 }) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   if (!fs.lstatSync(root).isDirectory()) throw new Error('unsafe preparation directory');
@@ -29,6 +30,10 @@ export function createTaskDispatcher(config, {
   async function step(entry, signal) {
     let record = state.get(entry.task.id);
     if (!record || record.generation !== entry.generation) throw new Error('stale dispatch preparation');
+    if (record.preparation_failure) {
+      await abandonPreparation(state, worktrees, record.task_id, record.generation, record.preparation_failure.reason);
+      return;
+    }
     if (record.report) {
       record = await state.reconcile(record.task_id, { generation: record.generation, replay: true });
       if (record.report?.state === 'confirmed' && record.report.action === 'complete' && worktrees.inspect(record.task_id)) {
@@ -42,7 +47,12 @@ export function createTaskDispatcher(config, {
       if (now() - (record.delivery.delivered_at ?? 0) < redeliveryMs) return;
     }
     if (!entry.prepared) {
+      if (entry.preparationRetry?.terminal) {
+        await abandonPreparation(state, worktrees, record.task_id, record.generation, entry.preparationRetry.error);
+        return;
+      }
       await lease(record);
+      if (entry.preparationRetry?.nextAt > now()) return;
       let renewal;
       let leaseError;
       const preparing = new AbortController();
@@ -54,7 +64,27 @@ export function createTaskDispatcher(config, {
         renewal = lease(record).catch(error => { leaseError = error; preparing.abort(); }).finally(() => { renewal = null; });
       }, leaseIntervalMs);
       try {
-        await worktrees.prepare(entry.task, undefined, { generation: entry.generation, signal: preparing.signal });
+        try {
+          await worktrees.prepare(entry.task, undefined, { generation: entry.generation, signal: preparing.signal });
+        } catch (error) {
+          if (signal.aborted || leaseError) throw error;
+          const failure = preparationFailure(error);
+          if (!failure) throw error;
+          const attempts = (entry.preparationRetry?.attempts ?? 0) + 1;
+          const terminal = failure.permanent || attempts >= 3;
+          const reason = `preparation failed: ${failure.reason} (${attempts} attempt${attempts === 1 ? '' : 's'})`;
+          entry.preparationRetry = { attempts, reason: failure.reason, terminal, error: reason, nextAt: now() + preparationRetryMs * 2 ** (attempts - 1) };
+          save(entry);
+          if (terminal) {
+            clearInterval(timer);
+            if (renewal) await renewal;
+            // The manager's rejected promise proves its process group stopped;
+            // releasePreparation independently refuses active/interrupted owners.
+            await abandonPreparation(state, worktrees, record.task_id, record.generation,
+              reason);
+          }
+          return;
+        }
         if (renewal) await renewal;
         if (leaseError) throw leaseError;
         signal.throwIfAborted();
@@ -89,8 +119,21 @@ export function createTaskDispatcher(config, {
     async enqueue(task) {
       const record = await state.registerClaim(task);
       let entry = read(task.id);
+      if (record.preparation_failure) {
+        schedule(entry || { scope, task: { id: task.id }, generation: record.generation });
+        return true;
+      }
       if (!entry) {
-        const material = await snapshot(task);
+        let material;
+        try { material = await snapshot(task); }
+        catch {
+          // Context is required for safe execution. Do not persist the raw claim
+          // (it contains credentials), nor retry an incomplete snapshot forever.
+          await state.abandonPreparation(task.id, record.generation,
+            'preparation failed: task context materialization failed; inspect retained task context');
+          schedule({ scope, task: { id: task.id }, generation: record.generation });
+          return true;
+        }
         entry = { scope, ...material, generation: record.generation, prepared: false };
         if (entry.task.id !== task.id) throw new Error('invalid task snapshot identity');
         save(entry);
@@ -113,6 +156,10 @@ export function createTaskDispatcher(config, {
       return state.report(taskId, generation, 'fail', { error, failure_reason: 'runtime_offline' });
     },
     resume() {
+      // CLI abandonment can predate the handoff snapshot (e.g. context failure).
+      for (const record of state.list()) if (record.preparation_failure && !read(record.task_id)) {
+        schedule({ task: { id: record.task_id }, generation: record.generation, scope });
+      }
       for (const name of fs.readdirSync(root).filter(name => name.endsWith('.json'))) {
         const entry = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
         if (entry.scope === scope) schedule(entry);

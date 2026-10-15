@@ -5,6 +5,7 @@ import { ensureWorkspaceResolved } from '../src/lib/workspace.js';
 import { createTaskState } from '../src/lib/task-state.js';
 import { parseTaskEndpoint } from '../src/lib/task-report.js';
 import { createWorktreeManager } from '../src/lib/worktrees.js';
+import { abandonPreparation } from '../src/lib/preparation-failure.js';
 
 const [action, endpoint, resourceId, ...args] = process.argv.slice(2);
 try {
@@ -15,7 +16,10 @@ try {
   const state = createTaskState(config);
   const manager = createWorktreeManager({ config, lifecycle: state });
   let result;
-  if (action === 'begin' && !resourceId) {
+  if (action === 'abandon' && resourceId === '--reason' && args.length === 1) {
+    result = await abandonPreparation(state, manager, taskId, generation, args[0]);
+    if (result.report?.state !== 'confirmed') process.exitCode = 1;
+  } else if (action === 'begin' && !resourceId) {
     // Confirm the original exact claim again before accepting business work.
     await state.start(taskId, generation);
     result = { accepted: await state.markAccepted(taskId, generation), task_id: taskId, generation };
@@ -44,7 +48,7 @@ try {
   } else if (action === 'inspect' && !resourceId) {
     result = manager.inspect(taskId);
     if (!result || (generation && result.generation !== generation)) throw new Error('worktree binding generation mismatch');
-  } else throw new Error('Usage: task.js <begin|locate|exec|quiesce|inspect|recover> <task@generation> [resource -- command args | --stopped | --to task@generation --baseline resource=commit --stopped]');
+  } else throw new Error('Usage: task.js <begin|locate|exec|quiesce|inspect|recover|abandon> <task@generation> [--reason text | resource -- command args | --stopped | --to task@generation --baseline resource=commit --stopped]');
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(`FAILED: ${error.message}`);

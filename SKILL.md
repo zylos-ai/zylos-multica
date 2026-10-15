@@ -135,15 +135,27 @@ it is not automatically admitted as a replacement generation.
 For a confirmed failed run, explicit worktree recovery is available only after
 operator authorization and independent execution/preparation stop verification:
 `task.js recover <old-task@generation> --to <target-task@generation>
---baseline <resource-id>=<full-commit-SHA> --stopped` (one baseline per resource).
+--baseline <resource-id>=<full-commit-SHA> --stopped` (one baseline per old-run resource).
 Use `task.js inspect <task-id>` to read bindings/generations. Select the original
 baseline or a verified commit explicitly. Old files, branches and failed status
-are retained. Matching worktree resources and an unstarted continuation are
-required; in_place and changed claims/resources are refused. Replay the identical
+are retained. Every old worktree resource must match an unstarted continuation;
+added repositories/resources prepare normally with host credentials. Removed or
+replaced shared resources, in_place shared bindings and changed claims are refused. Replay the identical
 command after interruption; never delete occupancy records or report completion
 to bypass failure. See `docs/worktree-manager.md` for stop proof and replay rules.
 The target resumes normal preparation/start/card admission; recovery does not
 admit business work or grant merge/release/deployment permission.
+
+For an unstarted, undelivered task stuck in preparation, use
+`task.js abandon <task@generation> --reason 'concrete reason'` with operator
+authorization. The reason is frozen; repeat the identical command on interruption.
+Active/interrupted preparation is never assumed stopped. All files remain, and
+only exact owned stopped-preparation occupancy is released. A terminal report
+is confirmed only when the CLI returns a confirmed result; pending reports stay
+pending. Automatic Git failure handling retries transient/unknown errors at most
+three times, fails known permanent errors immediately, and leaves busy worklines
+waiting. Missing required context terminates immediately. See
+`docs/worktree-manager.md#failed-preparation-and-operator-abandon-42`.
 
 Runtime records stay in `components/multica`; repositories, worktrees and task
 materials stay in `workspace/multica`. They survive upgrades and are not cleaned

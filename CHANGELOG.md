@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bound preparation retries, classify Git failures without exposing diagnostics,
+  preserve files while releasing stopped owned occupancy, and provide an
+  idempotent `task.js abandon` path for unstarted tasks.
+- Allow explicit failed-run recovery when the continuation adds repositories;
+  preserve exact shared-resource identity and explicit baselines, and prepare all
+  additions before start/admission. Added-resource failure uses safe termination.
+
 ## [0.4.2] - 2026-10-15
 
 ### Added
