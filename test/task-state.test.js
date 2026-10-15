@@ -324,3 +324,28 @@ test('failure session mutations absent from authority response are rejected befo
   assert.equal(f.state.get(task.id).report, null);
   assert.equal(f.removed.length, 0);
 });
+
+test('explicit reconciliation can send an unsent fail once after transient initial claim-check failure', async t => {
+  const f = await fixture(t); await f.begin();
+  let available = false, failPosts = 0;
+  const state = createTaskState(config, { ...f.options, request: async (_c, method, route, body) => {
+    if (route.endsWith('/start')) {
+      assert.equal(body.dispatched_at, task.dispatched_at);
+      if (!available) throw new Error('temporary start confirmation failure');
+      return remote('running');
+    }
+    if (method === 'GET') return [remote('running')];
+    if (route.endsWith('/fail')) {
+      failPosts++;
+      return remote('failed', { error: body.error, failure_reason: body.failure_reason });
+    }
+    throw new Error('unexpected request');
+  } });
+  const pending = await state.report(task.id, f.generation, 'fail', { error: 'failure' });
+  assert.equal(pending.report.attempts, 0); assert.equal(failPosts, 0);
+  available = true;
+  const confirmed = await state.reconcile(task.id, { generation: f.generation, replay: true });
+  assert.equal(confirmed.report.state, 'confirmed'); assert.equal(failPosts, 1);
+  await state.reconcile(task.id, { generation: f.generation, replay: true });
+  assert.equal(failPosts, 1);
+});

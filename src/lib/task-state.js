@@ -240,8 +240,9 @@ export function createTaskState(config, options = {}) {
     if (!remote) { record.report.state = 'pending_unknown'; record.report.reason = 'task result not found'; return save(record); }
     await observe(record, remote);
     if (!replay || closed(record.report.state) || !identity(record, remote) || remote.status !== 'running') return record;
-    // Fail can cause child retries; no automatic/manual blind fail replay.
-    if (record.report.action !== 'complete' || !record.start_confirmed || !record.execution.quiesced) return record;
+    // An unsent fail (initial exact-claim confirmation failed) may make its
+    // first attempt. Once any fail POST was attempted, never blindly repeat it.
+    if ((record.report.action !== 'complete' && record.report.attempts !== 0) || !record.start_confirmed || !record.execution.quiesced) return record;
     if (record.report.attempts >= 3 || now() - record.report.last_attempt_at < 1000 * 2 ** record.report.attempts) return record;
     return send(record);
   }
