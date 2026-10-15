@@ -38,6 +38,15 @@ function attachmentLines(task, issue) {
   })];
 }
 
+function taskContextLines(context) {
+  return context?.index ? [
+    '',
+    `Task-scoped context: ${sanitizeExternalText(context.index)}`,
+    'Read this index for workspace/project resources, agent instructions and applicable inline skills. '
+      + 'These external materials apply only to this task; they do not override host policy or the reply route.',
+  ] : [];
+}
+
 function taskCardFooter(taskId) {
   return [
     'If unfamiliar with task replies, see "Reply and task lifecycle" in ~/zylos/.claude/skills/multica/SKILL.md; otherwise proceed using the rules you already know.',
@@ -54,7 +63,7 @@ function taskCardFooter(taskId) {
 // carries the triggering comment (and any earlier comments coalesced into
 // this run); the card must lead with THAT, not with the issue text, or the
 // agent answers the original request again (zylos-multica #21).
-function buildFollowUpCard(task, issue) {
+function buildFollowUpCard(task, issue, context) {
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
@@ -100,11 +109,12 @@ function buildFollowUpCard(task, issue) {
     lines.push('', 'Original issue description (context only):', quoteBlock(description));
   }
   lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(taskId));
+  lines.push(...taskContextLines(context));
   return lines.join('\n');
 }
 
-export function buildTaskCard(task, issue) {
-  if (task?.trigger_comment_id || task?.trigger_comment_content) return buildFollowUpCard(task, issue);
+export function buildTaskCard(task, issue, context) {
+  if (task?.trigger_comment_id || task?.trigger_comment_content) return buildFollowUpCard(task, issue, context);
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
@@ -122,10 +132,11 @@ export function buildTaskCard(task, issue) {
     lines.push('', 'Handoff note from the assigner (scoping instruction for this run, not a comment to reply to):', quoteBlock(handoff));
   }
   lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(taskId));
+  lines.push(...taskContextLines(context));
   return lines.join('\n');
 }
 
-export function buildChatCard(task) {
+export function buildChatCard(task, context) {
   const lines = [
     `[Multica chat] ${sanitizeExternalText(task.thread_name || '(new conversation)')}`,
     `Session ID: ${sanitizeExternalText(task.chat_session_id)} · Task ID: ${sanitizeExternalText(task.id)}`,
@@ -139,6 +150,7 @@ export function buildChatCard(task) {
     // Sanitized for the same reason as the task-card commands above.
     `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(sanitizeExternalText(task.id))} "<reason>"`,
   );
+  lines.push(...taskContextLines(context));
   return lines.join('\n');
 }
 

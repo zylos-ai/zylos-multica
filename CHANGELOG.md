@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 100 MiB cap, credential-safe redirects, and contained non-overwriting files.
 - Chat, issue, and follow-up cards include attachment IDs and explicit download
   commands. Downloads remain opt-in; no uploads, execution, or auto-extraction.
+- Preserve claim-provided workspace/project resources, resolved repositories,
+  agent instructions and inline skills with supporting files in private,
+  task-scoped snapshots. All execution card types link the context index (#30).
+- Refuse delivery/start when context cannot be safely materialized, including
+  unresolved skill refs, invalid supporting paths, and oversized payloads.
 
 ## [0.3.4] - 2026-10-15
 

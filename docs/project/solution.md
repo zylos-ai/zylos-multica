@@ -37,7 +37,7 @@ multica 源码 `pkg/agent/` 有 40+ runtime 适配器，含 `openclaw.go`（spaw
 
 ## 4. 设计原则（承袭桥方案，已验证）
 
-1. **无状态**：真相在两端（任务状态归 Multica，执行上下文归会话/C4），组件崩溃重启零恢复成本。
+1. **平台状态权威、最小本地材料**：任务状态归 Multica，执行仍由活会话/C4承接；组件保留任务token及claim上下文材料快照，不把这些材料当成平台任务状态。每次交付独立保存只读用途的上下文索引；重启不删除旧材料。
 2. **薄通道**：agent 会话与 Multica 之间仅最小回报面；凭证唯一存放 `config.json`——这是 component-template 现行权威政策（main@d9263e9，PR #25 起 secrets 归 config.json + `sensitive: true` 标记 + configure hook，`.env` 仅 legacy 兼容路径）。硬化要求：config 写入原子（temp+rename）、文件权限 0600、PAT 永不出现在日志/错误回显/进程 argv。
 3. **不自建重试**：投递失败不 start，留给服务端 recovery 窗口重派。**due-date 例外的闭环**（review P2 修订）：scheduler add 成功定义为 durable handoff（此时即 start），但 handoff 不等于送达——组件主循环须对自己登记的一次性 scheduler 任务做对账：发现终态 `failed`（错过 miss window 等）即调 Multica fail API（error 注明 scheduler 失败原因），把任务交还服务端重派，杜绝"scheduler 已死、Multica 永远 running"的跨账本悬挂。
    **对账接口 = 显式前置依赖**（review 二轮收敛，替换 v2.1 的 database.js 只读旁路——该路径属内部接口耦合，弃用）：
@@ -140,3 +140,12 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 ---
 
 *方向 B、分流规则、daemon 协议面为桥方案已拍板前提，不在本方案重议。*
+
+
+## Claim上下文材料（#30）
+
+执行任务卡（issue、评论追问、chat）交付前保存claim中的workspace/project上下文、服务端已解析的repos、typed project_resources、agent.instructions及inline skills。卡片只带私有本地索引，不复制外部上下文到C4路由文本。材料未经执行，不是宿主政策；任务工作目录/分支仍需独立的执行绑定，不由材料目录代替。
+
+每份材料位于component data的`task-context/<generated snapshot>/`，目录0700、文件0600；技能用生成的编号目录，支持文件保留相对层级。拒绝绝对路径、路径穿越、symlink目录、重名/文件目录冲突、校验和不一致及超过10 MiB/1000文件的快照。先完整验证，再写材料；所有文件完成才交出索引。失败不交付、不start；失败时可能留下未引用的部分目录，保留用于诊断，不自动删除。重复claim生成新快照，不覆盖旧材料。
+
+只取上下文字段，不复制task token、agent custom_env/runtime_config/MCP配置；资源清单为原始外部业务数据，不自动执行。服务端repos优先级保持原样，不重新合并workspace repo。非空skill_refs明确拒绝；不声明skill-bundles-v1，不安装全局技能。此切片只覆盖材料交付，平台恢复/worktree/prepare lease契约仍属独立切片；真实平台验收尚未完成。
