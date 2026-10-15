@@ -1,6 +1,6 @@
 ---
 name: multica
-version: 0.4.2
+version: 0.5.0
 description: >
   Multica task-platform communication channel for Zylos agents. Use when a
   Multica deployment dispatches issue or chat work into the live agent session,
