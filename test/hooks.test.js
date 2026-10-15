@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { createTaskState } from '../src/lib/task-state.js';
 import { loadTaskToken, storeTaskToken } from '../src/lib/task-tokens.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,7 +98,7 @@ test('pre-upgrade creates a private config backup', () => {
   assert.doesNotMatch(result.stdout + result.stderr, /secret/);
 });
 
-test('send.js completes text and rejects media without a request', async () => {
+test('send.js completes text and rejects media without a request', async t => {
   const requests = [];
   const server = http.createServer((request, response) => {
     let body = '';
@@ -106,10 +107,13 @@ test('send.js completes text and rejects media without a request', async () => {
     request.on('end', () => {
       requests.push({ url: request.url, body: JSON.parse(body) });
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end('{}');
+      const id = request.url.split('/')[4];
+      const payload = JSON.parse(body);
+      response.end(JSON.stringify({ id, workspace_id: 'workspace-1', agent_id: 'agent-1', runtime_id: 'runtime-1', issue_id: 'issue-1', chat_session_id: '', status: request.url.endsWith('/start') ? 'running' : request.url.endsWith('/fail') ? 'failed' : 'completed', result: payload, error: payload.error, failure_reason: payload.failure_reason || '' }));
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-send-'));
   const dataDir = path.join(home, 'zylos/components/multica');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -125,11 +129,20 @@ test('send.js completes text and rejects media without a request', async () => {
   storeTaskToken('task-1', 'mat_task-1', tokenDir);
   storeTaskToken('task-2', 'mat_task-2', tokenDir);
   storeTaskToken('task-3', 'mat_task-3', tokenDir);
-  const textResult = await runAsync('scripts/send.js', ['task-1', 'done'], { env });
+  const generations = {};
+  const stateConfig = { base_url: `http://127.0.0.1:${server.address().port}`, workspace_id: 'workspace-1', daemon_id: 'daemon-1' };
+  const state = createTaskState(stateConfig, { root: path.join(dataDir, 'task-state'), request: async (_c, _m, route) => ({ id: route.split('/')[4], workspace_id: 'workspace-1', agent_id: 'agent-1', runtime_id: 'runtime-1', issue_id: 'issue-1', chat_session_id: '', status: 'running' }) });
+  for (const id of ['task-1', 'task-2']) {
+    const record = await state.registerClaim({ id, workspace_id: 'workspace-1', agent_id: 'agent-1', runtime_id: 'runtime-1', issue_id: 'issue-1', dispatched_at: '2026-10-15T08:00:00.123456Z' });
+    generations[id] = record.generation;
+    await state.start(id, record.generation);
+    await state.markQuiesced(id, record.generation);
+  }
+  const textResult = await runAsync('scripts/send.js', [`task-1@${generations['task-1']}`, 'done'], { env });
   assert.equal(textResult.status, 0, textResult.stderr);
   const progressResult = await runAsync('scripts/report.js', ['progress', 'task-3', 'halfway'], { env });
   assert.equal(progressResult.status, 0, progressResult.stderr);
-  const failResult = await runAsync('scripts/report.js', ['fail', 'task-2', 'blocked'], { env });
+  const failResult = await runAsync('scripts/report.js', ['fail', `task-2@${generations['task-2']}`, 'blocked'], { env });
   assert.equal(failResult.status, 0, failResult.stderr);
   const mediaResult = run('scripts/send.js', ['task-1', '[MEDIA:image]/tmp/a.png'], { env });
   assert.equal(mediaResult.status, 2);
@@ -140,7 +153,7 @@ test('send.js completes text and rejects media without a request', async () => {
   const [remainingTokenFile] = fs.readdirSync(tokenDir);
   assert.equal(fs.statSync(path.join(tokenDir, remainingTokenFile)).mode & 0o777, 0o600);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(requests, [
+  assert.deepEqual(requests.filter(request => !request.url.endsWith('/start')), [
     { url: '/api/daemon/tasks/task-1/complete', body: { output: 'done' } },
     { url: '/api/daemon/tasks/task-3/progress', body: { summary: 'halfway' } },
     { url: '/api/daemon/tasks/task-2/fail', body: { error: 'blocked' } },

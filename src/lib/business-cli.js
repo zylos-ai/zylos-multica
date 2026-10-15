@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { downloadAttachment } from './attachments.js';
 import { multicaRequest } from './multica-api.js';
 import { loadTaskToken } from './task-tokens.js';
 import { ensureWorkspaceResolved } from './workspace.js';
@@ -339,6 +340,34 @@ function printTable(value, stdout) {
   }
 }
 
+// A successful POST saves the comment independently of mention admission.
+// Missing receipts do not prove that no implicit trigger occurred.
+function printCommentReceipt(result, stdout) {
+  stdout.write('Comment saved. Trigger outcomes describe explicit mentions, not all implicit triggers.\n');
+  const { trigger_outcomes: outcomes, ...comment } = result ?? {};
+  printTable(comment, stdout);
+  if (!Array.isArray(outcomes) || outcomes.length === 0) {
+    stdout.write('Trigger outcomes not reported; whether a target was triggered is unknown.\n');
+    return;
+  }
+  const meanings = new Map([
+    ['queued', 'new task queued; execution not completed'],
+    ['coalesced', 'combined with an existing pending run'],
+    ['deferred', 'admitted but not started'],
+    ['steered', 'bound to a running turn; delivery not verified'],
+    ['blocked', 'trigger refused; comment remains saved; do not retry the comment'],
+  ]);
+  for (const outcome of outcomes) {
+    printTable({
+      target_type: outcome?.target_type ?? '(not reported)',
+      target_id: outcome?.target_id ?? '(not reported)',
+      status: outcome?.status ?? '(not reported)',
+      reason_code: outcome?.reason_code ?? '(not reported)',
+      meaning: meanings.get(outcome?.status) ?? 'unknown trigger outcome; no success or failure inferred',
+    }, stdout);
+  }
+}
+
 export async function runBusinessCLI(config, argv, dependencies = {}) {
   const request = dependencies.request ?? multicaRequest;
   const readTaskToken = dependencies.loadTaskToken ?? loadTaskToken;
@@ -366,7 +395,16 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   // chat history authenticates with the task-scoped token, not the PAT.
   if (group === 'issue') await resolveWorkspace(config, { request });
   let response;
-  if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
+  if (group === 'attachment' && command === 'download') {
+    rejectUnknown(flags, new Set(['task', 'output-dir', 'output']));
+    if (!subcommand || rest.length) throw new Error('attachment download requires exactly one attachment ID');
+    const taskId = requireText(one(flags, 'task'), '--task').trim();
+    const taskToken = readTaskToken(taskId);
+    const outputDir = one(flags, 'output-dir');
+    if (outputDir !== undefined) requireText(outputDir, '--output-dir');
+    const result = await downloadAttachment(config, { taskId, attachmentId: subcommand, taskToken, outputDir }, dependencies);
+    response = { result, output: assertOutput(one(flags, 'output')) };
+  } else if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
   else if (group === 'issue' && command === 'get') response = await issueGet(config, [subcommand, ...rest].filter((value) => value !== undefined), flags, request);
   else if (group === 'issue' && command === 'list' && subcommand === undefined) response = await issueList(config, flags, request);
   else if (isCommentAdd) response = await commentAdd(config, rest[0], commentPlan, request);
@@ -374,9 +412,10 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);
   } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);
-  else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ...');
+  else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ... | attachment download <id> --task <id> ...');
 
-  if (response.output === 'table') printTable(response.result, io.stdout);
+  if (response.output === 'table' && isCommentAdd) printCommentReceipt(response.result, io.stdout);
+  else if (response.output === 'table') printTable(response.result, io.stdout);
   else io.stdout.write(`${JSON.stringify(response.result, null, 2)}\n`);
   return response.result;
 }

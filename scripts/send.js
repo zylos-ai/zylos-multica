@@ -1,30 +1,21 @@
 #!/usr/bin/env node
-/** Standard C4 outbound interface. A text reply completes one Multica task. */
-
+/** Standard C4 outbound interface; endpoint carries the original generation. */
 import { getConfig } from '../src/lib/config.js';
-import { reportTask } from '../src/lib/multica-api.js';
-import { removeTaskToken } from '../src/lib/task-tokens.js';
+import { reportFromCLI } from '../src/lib/task-report.js';
 
-const [taskId, ...parts] = process.argv.slice(2);
-const message = parts.join(' ').trim();
-
-if (!taskId || !message) {
-  console.error('Usage: send.js <task_id> <message>');
+const [endpoint, ...parts] = process.argv.slice(2);
+const message = parts.join(' ');
+if (!endpoint || !message.trim()) {
+  console.error('Usage: send.js <task_id@generation> <message>');
   process.exit(2);
 }
-if (/^\[MEDIA:[^\]]+\]/i.test(message)) {
-  console.error('Multica v0.2.21 accepts text replies only. Send a text conclusion instead of [MEDIA:...].');
+if (/^\[MEDIA:[^\]]+\]/i.test(message.trimStart())) {
+  console.error('Multica accepts text replies only. Send a text conclusion instead of [MEDIA:...].');
   process.exit(2);
 }
-
 try {
-  await reportTask(getConfig(), 'complete', taskId, message);
-  try {
-    removeTaskToken(taskId);
-  } catch (error) {
-    console.error(`WARNING: task ${taskId} completed but its local task token could not be removed: ${error.message}`);
-  }
-  console.log(`OK: task ${taskId} completed`);
+  await reportFromCLI(getConfig(), endpoint, 'complete', message);
+  console.log(`OK: task ${endpoint} completion confirmed`);
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
   process.exit(1);

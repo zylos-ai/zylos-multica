@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Keep command occupancy when background process-group members survive a normal
+  shell exit, and exclude overlapping parent/child in-place directories atomically.
+- Preserve server failure classification for omitted/empty reasons so transient
+  network failures retain the platform's retry eligibility.
+
+- Keep downloaded task materials under `workspace/multica/tasks`, separate from component-owned attachment allowlists; output paths cannot target runtime state.
+- Store task context materials in task-scoped workspace snapshots, keeping component runtime state separate.
+
+### Added
+
+- Task-scoped `attachment download` with claimed-ID checks, binary streaming,
+  a 100 MiB cap, credential-safe redirects, and contained non-overwriting files.
+- Chat, issue, and follow-up cards include attachment IDs and explicit download
+  commands. Downloads remain opt-in; no uploads, execution, or auto-extraction.
+- Preserve claim-provided workspace/project resources, resolved repositories,
+  agent instructions and inline skills with supporting files in private,
+  task-scoped snapshots. All execution card types link the context index (#30).
+- Refuse delivery/start when context cannot be safely materialized, including
+  unresolved skill refs, invalid supporting paths, and oversized payloads.
+- Add a task worktree manager with persistent resource
+  bindings, workline/path exclusion, source snapshots and confirmed continuation.
+- Add explicit-cwd command execution, quiescence and conservative interruption
+  recovery. Preparation is asynchronous and cancellable so lease timers can run.
+- Keep work content under `workspace/multica` and execution metadata under the
+  component data directory. Claim-aware tasks use durable preparation, explicit
+  session admission and generation-bound reporting; unaccepted cards can retry.
+- Retain uncertain terminal reports for authoritative result reconciliation and
+  preserve task state, tokens, allowlists and execution bindings across upgrades.
+
 ## [0.3.4] - 2026-10-15
 
 ### Fixed
