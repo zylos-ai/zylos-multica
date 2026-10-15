@@ -249,7 +249,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
             ? (resource.mode === 'worktree' ? fs.realpathSync(await git(resource.source, ['rev-parse', '--show-toplevel'])) : resource.source)
             : path.join(contentRoot, 'repos', hash(resource.source));
           const conversation = task.issue_id ? ['issue', task.issue_id] : task.chat_session_id ? ['chat', task.chat_session_id] : ['task', task.id];
-          const line = hash([config.base_url, config.workspace_id, task.agent_id || task.agent?.id, ...conversation, resource.id, resource.source, repo]);
+          const line = hash([config.base_url, config.workspace_id, task.agent_id || task.agent?.id, ...conversation, resource.id, resource.source, repo, resource.mode, resource.ref || null]);
           const base = path.join(taskRoot, hash(resource.id));
           return { ...resource, repo, line_key: line, path_key: resource.mode === 'in_place' ? `path-${hash(resource.source)}` : null,
             task_root: base, worktree: resource.mode === 'worktree' ? path.join(base, 'worktree') : resource.source,

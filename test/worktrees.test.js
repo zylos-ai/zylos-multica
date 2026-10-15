@@ -118,6 +118,11 @@ test('resource mode/daemon/ref rejection and remote repos use controlled cache w
   const binding = (await f.prepare(remoteTask, remoteManager)).bindings[0];
   assert.ok(binding.repo.startsWith(path.join(f.root, 'workspace/repos/'))); assert.ok(binding.cwd.startsWith(path.join(f.root, 'workspace/tasks/')));
   assert.equal(fs.readFileSync(path.join(binding.cwd, 'sub/file'), 'utf8'), 'base\n');
+  const revisedTask = f.task('remote-revised'); revisedTask.project_resources = [];
+  revisedTask.issue_id = remoteTask.issue_id;
+  revisedTask.repos = [{ url: remoteTask.repos[0].url, ref: `refs/heads/${git(f.source, ['branch', '--show-current'])}` }];
+  const revised = (await f.prepare(revisedTask, remoteManager)).bindings[0];
+  assert.notEqual(revised.line_key, binding.line_key, 'changed explicit ref is a new workline');
   remoteTask.repos[0].ref = '--upload-pack=bad'; assert.throws(() => resolveExecutionResources(remoteTask, config), /ref/);
 });
 test('CLI requires task/generation/resource and commands execute with explicit cwd', async () => {
@@ -247,4 +252,11 @@ test('Git cancellation also waits for TERM-ignoring helper descendants', async (
   assert.ok(fs.existsSync(marker)); controller.abort(); await rejected;
   const size = fs.statSync(marker).size; await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(fs.statSync(marker).size, size);
+});
+
+
+test('changing execution mode creates a distinct workline rather than reusing a prior delivery head', async () => {
+  const f = setup(); const a = (await f.prepare(f.task('a', 'shared', 'worktree', f.source))).bindings[0];
+  const b = (await f.prepare(f.task('b', 'shared', 'in_place', f.source))).bindings[0];
+  assert.notEqual(a.line_key, b.line_key); assert.equal(b.cwd, f.source);
 });

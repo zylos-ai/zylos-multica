@@ -46,7 +46,8 @@ manager never invents or replaces it.
 
 - `await prepare(task, resources?, {generation,signal})` resolves claim resources
   by default, acquires all workline/path ownership in stable order, and prepares
-  each independent binding. Busy raises `WorktreeBusyError` immediately; the
+  each independent binding. Resource mode/ref changes create a new workline rather
+  than silently continuing a commit from an older resource configuration. Busy raises `WorktreeBusyError` immediately; the
   coordinator keeps the server preparation lease and retries. On acquisition
   failure, only newly acquired locks from that attempt are released, before Git
   mutation. Preparation failures retain bindings/owned content for recovery.
