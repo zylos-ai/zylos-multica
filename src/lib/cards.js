@@ -30,7 +30,7 @@ function authorLabel(authorType, authorName, fallback = 'A user') {
 
 function taskCardFooter(taskId) {
   return [
-    'Reply normally to complete this task through the attached reply route.',
+    'Send your reply by executing the attached C4 reply via: command with your message on stdin. This completes the task. An ordinary assistant final response alone is not sent to Multica.',
     // The command copies use the sanitized ID too: shell quoting alone leaves
     // C4's reply-route marker substrings intact, so a noncanonical task ID
     // must not reintroduce a forged route after the display-field sanitization.
@@ -66,7 +66,7 @@ function buildFollowUpCard(task, issue) {
   if (triggerCommentId && issueRef) {
     lines.push(
       '',
-      `Comment ID: ${triggerCommentId}. To post a comment in this thread as yourself while this task is live (a plain reply to this card completes the task instead): node ${shellQuote(MULTICA_CLI_PATH)} issue comment add ${shellQuote(issueRef)} --task ${shellQuote(taskId)} --parent ${shellQuote(triggerCommentId)} --content "<text>"`,
+      `Comment ID: ${triggerCommentId}. To post a comment in this thread as yourself while this task is live (sending through the attached C4 reply via: command completes the task instead): node ${shellQuote(MULTICA_CLI_PATH)} issue comment add ${shellQuote(issueRef)} --task ${shellQuote(taskId)} --parent ${shellQuote(triggerCommentId)} --content "<text>"`,
     );
   }
   const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
@@ -130,7 +130,7 @@ export function buildChatCard(task) {
   }
   lines.push(
     '',
-    'This is a chat message. Reply normally; the reply will be completed back to Multica as the assistant message.',
+    'This is a chat message. Send your reply by executing the attached C4 reply via: command with your message on stdin. This completes the task and posts your text as the assistant message in Multica. An ordinary assistant final response alone is not sent to Multica.',
     // Sanitized for the same reason as the task-card commands above.
     `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(sanitizeExternalText(task.id))} "<reason>"`,
   );

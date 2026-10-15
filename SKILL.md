@@ -57,8 +57,13 @@ official core release for scheduler `list --json` due-date reconciliation.
 Older cores keep ordinary Multica delivery available but log a reconciliation
 warning.
 
-Normal replies to a Multica card complete its task through the standard C4
-reply route. Use the supplemental reporter only for progress or failure:
+To reply to a Multica card, explicitly execute its attached C4 `reply via:`
+command, passing your message on stdin (use a quoted heredoc as required by
+comm-bridge). This completes the task; for a chat task, it also posts your text
+as the assistant message in the originating Multica conversation. An ordinary
+assistant final response alone is not sent to Multica.
+
+Use the supplemental reporter only for progress or failure:
 
 ```bash
 node ~/zylos/.claude/skills/multica/scripts/report.js progress <task-id> "<status>"
