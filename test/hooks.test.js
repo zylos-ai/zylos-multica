@@ -98,7 +98,7 @@ test('pre-upgrade creates a private config backup', () => {
   assert.doesNotMatch(result.stdout + result.stderr, /secret/);
 });
 
-test('send.js completes text and rejects media without a request', async () => {
+test('send.js completes text and rejects media without a request', async t => {
   const requests = [];
   const server = http.createServer((request, response) => {
     let body = '';
@@ -113,6 +113,7 @@ test('send.js completes text and rejects media without a request', async () => {
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-send-'));
   const dataDir = path.join(home, 'zylos/components/multica');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -155,7 +156,7 @@ test('send.js completes text and rejects media without a request', async () => {
   assert.deepEqual(requests.filter(request => !request.url.endsWith('/start')), [
     { url: '/api/daemon/tasks/task-1/complete', body: { output: 'done' } },
     { url: '/api/daemon/tasks/task-3/progress', body: { summary: 'halfway' } },
-    { url: '/api/daemon/tasks/task-2/fail', body: { error: 'blocked', failure_reason: 'agent_error' } },
+    { url: '/api/daemon/tasks/task-2/fail', body: { error: 'blocked' } },
   ]);
   server.close();
 });

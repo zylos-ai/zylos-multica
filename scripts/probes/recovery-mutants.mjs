@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const mutants = [
+  ['override-server-failure-classification', [[
+    '  const result = {};',
+    "  const result = {};\n  if (action === 'fail' && !payload.failure_reason) payload = { ...payload, failure_reason: 'agent_error' };",
+  ]], 'network failure preserves server classification'],
   ['post-before-pending', [
     ['        save(record); // Must succeed before ANY terminal POST.\n', ''],
     ['    save(record);\n    let response;', '    let response;'],

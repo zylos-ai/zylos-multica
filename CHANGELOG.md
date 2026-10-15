@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Keep command occupancy when background process-group members survive a normal
+  shell exit, and exclude overlapping parent/child in-place directories atomically.
+- Preserve server failure classification for omitted/empty reasons so transient
+  network failures retain the platform's retry eligibility.
+
 - Keep downloaded task materials under `workspace/multica/tasks`, separate from component-owned attachment allowlists; output paths cannot target runtime state.
 - Store task context materials in task-scoped workspace snapshots, keeping component runtime state separate.
 

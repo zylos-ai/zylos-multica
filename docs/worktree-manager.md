@@ -23,7 +23,10 @@ owner's implementation choice; tests only use disposable fixture repositories.
   instead requires a separate object transfer/cache plus dirty-content transfer,
   duplicates disk use, and needs an explicit way to import/push delivered branches.
 - `in_place` uses only the declared directory, with realpath-based exclusion. The
-  directory remains externally owned. No worktree, branch or source snapshot is
+  directory remains externally owned. Ancestor/descendant paths conflict; siblings
+  remain independent. A shared exclusive coordination file makes path inspection
+  and ownership publication atomic across processes. An interrupted coordination
+  holder requires explicit stop acknowledgement before recovery. No worktree, branch or source snapshot is
   created for this mode. Unknown modes are rejected; omitted mode means in_place,
   matching the pinned server. Leader tasks skip local-directory assignment,
   following the pinned upstream; claim-resolved repository resources remain available.
@@ -65,7 +68,11 @@ manager never invents or replaces it.
   stop acknowledgement. On Unix each command/Git operation has its own process
   group; cancellation retains TERM→KILL escalation even if the direct child closes
   early, then confirms no live descendants remain (Linux /proc group check;
-  zombies cannot write). Unknown group termination keeps execution blocked.
+  zombies cannot write). Normal command close also checks the process group:
+  redirected background descendants leave a durable `stop_unconfirmed` record and
+  retain occupancy. They are not automatically killed on normal close; after
+  independently confirming they stopped, use explicit recovery acknowledgement.
+  Unknown group termination keeps execution blocked.
 - `await quiesce(taskId,generation,{acknowledgedStopped:true})` requires the live
   session to confirm it will perform no further native writes, and rejects any
   running/unknown command. It records worktree Git status/commit, preserves dirty

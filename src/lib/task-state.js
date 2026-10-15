@@ -23,7 +23,6 @@ function payloadFor(action, payload) {
   const fields = action === 'complete' ? completeFields : action === 'fail' ? failFields : null;
   if (!fields || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('invalid terminal payload');
   const result = {};
-  if (action === 'fail' && !payload.failure_reason) payload = { ...payload, failure_reason: 'agent_error' };
   for (const key of Object.keys(payload).sort()) {
     const value = payload[key];
     if (!Object.hasOwn(fields, key) || typeof value !== typeof fields[key]) throw new Error(`invalid terminal field ${key}`);
@@ -155,7 +154,10 @@ export function createTaskState(config, options = {}) {
     } else if (['failed', 'cancelled'].includes(remote.status)) {
       if (report.action !== 'fail' || remote.status !== 'failed') report.state = 'superseded';
       else {
-        const differences = ['error', 'failure_reason'].filter(field => (remote[field] ?? '') !== (report.payload[field] ?? ''));
+        // Empty/omitted reason delegates classification to the server. Compare
+        // only a reason we actually supplied, while retaining its authority value.
+        const fields = report.payload.failure_reason ? ['error', 'failure_reason'] : ['error'];
+        const differences = fields.filter(field => (remote[field] ?? '') !== (report.payload[field] ?? ''));
         for (const field of ['work_dir', 'branch_name', 'durable_work_dir']) {
           // Fail SQL COALESCE preserves old metadata for empty/omitted input.
           if (report.payload[field] && remote[field] !== report.payload[field]) differences.push(`task.${field}`);

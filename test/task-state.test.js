@@ -349,3 +349,45 @@ test('explicit reconciliation can send an unsent fail once after transient initi
   await state.reconcile(task.id, { generation: f.generation, replay: true });
   assert.equal(failPosts, 1);
 });
+
+test('network failure preserves server classification for omitted and empty reasons, including lost-response readback', async t => {
+  for (const reason of [undefined, '']) {
+    const error = 'stream disconnected before completion';
+    let posts = 0, sent;
+    const f = await fixture(t, { request: async (_c, _method, route, body) => {
+      if (route.endsWith('/start')) return remote('running');
+      if (route.endsWith('/fail')) {
+        posts++; sent = { ...body };
+        assert.equal(body.failure_reason, reason);
+        // The pinned server classifies an empty reason as provider_network;
+        // omit the response to exercise authoritative history recovery too.
+        throw new Error('response lost after fail committed');
+      }
+      return [remote('failed', { error, failure_reason: 'agent_error.provider_network' })];
+    } });
+    await f.begin();
+    const payload = { error, ...(reason === undefined ? {} : { failure_reason: reason }) };
+    const result = await f.state.report(task.id, f.generation, 'fail', payload);
+    assert.deepEqual(sent, payload);
+    assert.equal(result.report.state, 'confirmed');
+    assert.deepEqual(result.report.payload, payload);
+    assert.equal(result.report.evidence.failure_reason, 'agent_error.provider_network');
+    await f.state.reconcile(task.id, { generation: f.generation, replay: true });
+    assert.equal(posts, 1);
+  }
+});
+
+test('failure confirmation still rejects different error text and a mismatched explicit reason', async t => {
+  for (const explicit of [false, true]) {
+    const f = await fixture(t, { request: async (_c, _m, route) => route.endsWith('/start') ? remote('running') : remote('failed', {
+      error: explicit ? 'stream disconnected before completion' : 'different failure',
+      failure_reason: 'agent_error.provider_network',
+    }) });
+    await f.begin();
+    const result = await f.state.report(task.id, f.generation, 'fail', {
+      error: 'stream disconnected before completion', ...(explicit ? { failure_reason: 'timeout' } : {}),
+    });
+    assert.equal(result.report.state, 'conflict');
+    assert.deepEqual(result.report.differences, [explicit ? 'failure_reason' : 'error']);
+  }
+});

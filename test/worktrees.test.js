@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import test from 'node:test';
 import { createWorktreeManager, resolveExecutionResources, WorktreeBusyError, runGit } from '../src/lib/worktrees.js';
 import { runWorktreeCli } from '../src/lib/worktree-cli.js';
@@ -259,4 +259,67 @@ test('changing execution mode creates a distinct workline rather than reusing a 
   const f = setup(); const a = (await f.prepare(f.task('a', 'shared', 'worktree', f.source))).bindings[0];
   const b = (await f.prepare(f.task('b', 'shared', 'in_place', f.source))).bindings[0];
   assert.notEqual(a.line_key, b.line_key); assert.equal(b.cwd, f.source);
+});
+
+
+test('normal command close retains occupancy when redirected background descendants remain', async () => {
+  const f = setup(); await f.prepare(f.task('a', 'a', 'in_place', f.source));
+  const marker = path.join(f.root, 'late-write');
+  await assert.rejects(f.manager.run('a', 'gen-a', 'resource-a',
+    ['sh', '-c', `(sleep 0.3; echo late > '${marker}') >/dev/null 2>&1 &`]), /process-group stop unconfirmed/);
+  assert.equal(f.manager.inspect('a').commands[0].status, 'stop_unconfirmed');
+  const restart = createWorktreeManager({ dataDir: path.join(f.root, 'execution'), workRoot: path.join(f.root, 'workspace'), config, lifecycle: f.lifecycle });
+  await assert.rejects(restart.quiesce('a', 'gen-a', { acknowledgedStopped: true }), /exit is unconfirmed/);
+  const next = f.task('b', 'b', 'in_place', f.source);
+  await assert.rejects(f.prepare(next, restart), WorktreeBusyError);
+  for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(fs.readFileSync(marker, 'utf8').trim(), 'late', 'normal completion does not silently kill background work');
+  // Fixture descendant has finished; explicitly acknowledge that observation.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  restart.acknowledgeStopped('a', 'gen-a', { acknowledgedStopped: true });
+  await restart.quiesce('a', 'gen-a', { acknowledgedStopped: true });
+  assert.equal((await f.prepare(next, restart)).phase, 'prepared');
+});
+
+test('in_place overlap excludes both ancestor directions while allowing sibling directories', async () => {
+  const f = setup(); const sub = path.join(f.source, 'sub'); const sibling = path.join(f.source, 'sub-other'); fs.mkdirSync(sibling);
+  await f.prepare(f.task('child', 'child', 'in_place', sub));
+  const parent = f.task('parent', 'parent', 'in_place', f.source);
+  await assert.rejects(f.prepare(parent), WorktreeBusyError);
+  assert.equal((await f.prepare(f.task('sibling', 'sibling', 'in_place', sibling))).phase, 'prepared');
+  await f.manager.quiesce('child', 'gen-child', { acknowledgedStopped: true });
+  await f.manager.quiesce('sibling', 'gen-sibling', { acknowledgedStopped: true });
+  await f.prepare(parent);
+  await assert.rejects(f.prepare(f.task('next-child', 'next-child', 'in_place', sub)), WorktreeBusyError);
+});
+
+test('separate processes atomically acquire overlapping in_place paths', async () => {
+  const f = setup(); const gate = path.join(f.root, 'go');
+  const tasks = [f.task('parent', 'parent', 'in_place', f.source), f.task('child', 'child', 'in_place', path.join(f.source, 'sub'))];
+  const ready = tasks.map((task) => path.join(f.root, task.id + '-ready'));
+  const workers = tasks.map((task, i) => {
+    const script = `import fs from 'node:fs';
+      import { createWorktreeManager } from ${JSON.stringify(new URL('../src/lib/worktrees.js', import.meta.url).href)};
+      const manager = createWorktreeManager({
+        ...${JSON.stringify({ dataDir: path.join(f.root, 'execution'), workRoot: path.join(f.root, 'workspace'), config })}, lifecycle: { assertCurrent() {} }
+      });
+      fs.writeFileSync(${JSON.stringify(ready[i])}, 'ready');
+      while (!fs.existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 2));
+      try { await manager.prepare(${JSON.stringify(task)}, undefined, {generation: ${JSON.stringify('gen-' + task.id)}}); console.log('prepared'); }
+      catch(error) { if (error.code !== 'WORKTREE_BUSY') throw error; console.log('busy'); }`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    return new Promise((resolve, reject) => {
+      let stdout = '', stderr = '';
+      child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
+      child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr)));
+    });
+  });
+  for (let i = 0; i < 200 && !ready.every(file => fs.existsSync(file)); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  fs.writeFileSync(gate, 'go');
+  assert.deepEqual((await Promise.all(workers)).sort(), ['busy', 'prepared']);
+});
+
+test('normal Git close does not certify redirected helper descendants stopped', async () => {
+  const f = setup();
+  await assert.rejects(runGit(f.source, ['-c', 'alias.background=!sleep 0.2 >/dev/null 2>&1 &', 'background']), error => error.code === 'PROCESS_STOP_UNCONFIRMED');
 });

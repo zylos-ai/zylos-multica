@@ -91,7 +91,7 @@ export function runGit(cwd, args, env = {}, { signal } = {}) {
     // process exit and closed stdio, including Git's helpers in this group.
     child.on('close', async (code) => {
       clearTimeout(timeout); signal?.removeEventListener('abort', stop);
-      if (stopping && !await stopping) { const error = new Error('Git process-group stop unconfirmed'); error.code = 'PROCESS_STOP_UNCONFIRMED'; reject(error); return; }
+      if (!await (stopping || groupStopped(child.pid).catch(() => false))) { const error = new Error('Git process-group stop unconfirmed'); error.code = 'PROCESS_STOP_UNCONFIRMED'; reject(error); return; }
       if (failed || code !== 0) reject(new Error(signal?.aborted ? 'Git preparation aborted' : 'git operation failed; inspect preserved task directory'));
       else resolve(stdout.trimEnd());
     });
@@ -173,11 +173,31 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
     return record;
   }
   function save(record) { write(recordPath(record.task_id), record); }
-  function acquire(keys, identity) {
+  function acquire(keys, identity, paths = new Map()) {
     const created = [];
+    // Serialize overlap inspection + publication across all manager processes.
+    // A crashed holder is recovered only by explicit stop acknowledgement.
+    const coordinationKey = 'in-place-coordination';
+    if (paths.size) {
+      try { exclusive(lockPath(coordinationKey), identity); }
+      catch (error) { if (error.code === 'EEXIST') throw new WorktreeBusyError('in_place coordination active or interrupted'); throw error; }
+    }
     try {
+      if (paths.size) for (const name of fs.readdirSync(path.join(root, 'owners'))) {
+        if (!name.startsWith('path-') || !name.endsWith('.json')) continue;
+        const held = read(path.join(root, 'owners', name));
+        if (!held || same(held, identity)) continue;
+        // Unknown old metadata is conservatively occupied until recovered.
+        if (!held.source || [...paths.values()].some((source) => {
+          const contains = (parent, child) => {
+            const relative = path.relative(parent, child);
+            return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+          };
+          return contains(source, held.source) || contains(held.source, source);
+        })) throw new WorktreeBusyError('overlapping in_place directory occupied');
+      }
       for (const key of [...new Set(keys)].sort()) {
-        try { exclusive(lockPath(key), identity); created.push(key); }
+        try { exclusive(lockPath(key), paths.has(key) ? { ...identity, source: paths.get(key) } : identity); created.push(key); }
         catch (error) {
           if (error.code !== 'EEXIST') throw error;
           if (!same(read(lockPath(key)), identity)) throw new WorktreeBusyError();
@@ -187,7 +207,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
       // No preparation has run yet. Release only this attempt's new locks.
       for (const key of created) fs.unlinkSync(lockPath(key));
       throw error;
-    }
+    } finally { if (paths.size) release(coordinationKey, identity); }
   }
   function release(key, identity) {
     if (!same(read(lockPath(key)), identity)) throw new Error('worktree ownership changed');
@@ -261,7 +281,8 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
           resource_digest: resourceDigest, phase: 'preparing', bindings, commands: [], execution: { quiesced: false } };
         save(record);
       }
-      acquire(record.bindings.flatMap((binding) => [binding.line_key, binding.path_key].filter(Boolean)), owner(task.id, generation));
+      acquire(record.bindings.flatMap((binding) => [binding.line_key, binding.path_key].filter(Boolean)), owner(task.id, generation),
+        new Map(record.bindings.filter((binding) => binding.path_key).map((binding) => [binding.path_key, binding.source])));
       for (const binding of record.bindings) {
         signal?.throwIfAborted();
         assert(task.id, generation);
@@ -351,7 +372,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
         child.on('error', (error) => { spawnError = error; });
         child.on('close', async (code, exitSignal) => {
           signal?.removeEventListener('abort', stop);
-          const stopped = !stopping || await stopping;
+          const stopped = await (stopping || groupStopped(child.pid).catch(() => false));
           processes.delete(command.id);
           command.status = stopped ? 'exited' : 'stop_unconfirmed'; command.code = code; command.signal = exitSignal;
           try { save(record); } catch { reject(new Error('command exited but durable confirmation failed')); finish(); return; }
@@ -428,6 +449,7 @@ export function createWorktreeManager({ dataDir = path.join(os.homedir(), 'zylos
     for (const command of record.commands) if (!['exited', 'stopped_confirmed'].includes(command.status)) command.status = 'stopped_confirmed';
     save(record);
     if (existing) fs.unlinkSync(opPath(taskId));
+    if (same(read(lockPath('in-place-coordination')), owner(taskId, generation))) release('in-place-coordination', owner(taskId, generation));
     for (const binding of record.bindings) {
       const key = `git-prepare-${hash(binding.repo)}`;
       if (same(read(lockPath(key)), owner(taskId, generation))) release(key, owner(taskId, generation));
