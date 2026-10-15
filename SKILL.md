@@ -97,70 +97,38 @@ node ~/zylos/.claude/skills/multica/scripts/report.js fail <task-id@generation> 
 
 Media replies are not supported in v0.2.21; send text instead.
 
-## Bound task execution and recovery
+## Task admission, Agent-owned resources and recovery
 
-Older cards with a plain task ID keep their original reply/progress/fail route;
-they do not use the bound execution helpers below.
+For cards with `task_id@generation`, run `task.js begin` exactly as the card says.
+Proceed only on `accepted: true`; false means a duplicate, not permission to run
+again. Unaccepted cards may be redelivered with the same generation. Older plain
+ID cards keep their original reply route.
 
-For cards containing `task_id@generation`, run the card's `task.js begin`
-command before doing any work. Continue only when it returns `accepted: true`;
-`accepted: false` means this delivery duplicates an already admitted task.
-A queued C4 message is not proof that the session accepted it. The bridge may
-redeliver an unaccepted card after 60 seconds with the same generation.
+The component does not invoke Git, prepare repositories or bind working directories.
+Read the context manifest and resource metadata; choose authorized Git, API or
+existing-directory access yourself, using your native tools. Supplied local paths
+are source information, not prepared/verified directories. Preserve task identity
+and track your processes and work locations. Report access blockers in the task.
 
-Use the card's bound resource directories for edits. Run commands with
-`task.js exec <task-id@generation> <resource-id> -- <command> [args...]`;
-`task.js locate <task-id@generation> <resource-id>` returns the binding.
-These directories isolate work; they are not a permissions sandbox. A local
-repository worktree shares Git objects, refs and worktree registration with its
-source repository. Do not use a business source repository without authorization.
+Before completing or failing, finish/stop every task command, child process and
+native edit, then run `task.js quiesce <task@generation> --stopped`. This is your
+explicit acknowledgement, not a process cancellation mechanism. Optional
+`--work-dir <path> --branch <name> --pr-url <url>` records actual work metadata;
+no old binding is inferred. Omit filesystem flags for API-only work. Failure sends
+work_dir/branch_name only; completion also supports pr_url. Describe multiple
+resource results in your final text. Complete through the attached C4 route, or
+use `report.js fail`. Pending reports keep their frozen text and identity: use
+`report.js reconcile <task@generation>` until authoritative confirmation.
 
-Before final completion or failure, finish all task commands and native edits,
-then run `task.js quiesce <task-id@generation> --stopped`. This is an explicit
-acknowledgement that execution stopped; it cannot cancel a command running in
-another helper process. Unconfirmed commands retain their occupancy for recovery.
-Then use the attached C4 reply route for completion, or `report.js fail`.
-For multiple resources, include each directory, branch and result in the final
-text. A single resource supplies work_dir/branch metadata automatically; no
-replacement durable directory is inferred.
-
-When a terminal report is pending or uncertain, keep its original text and run
-`report.js reconcile <task-id@generation>`. The bridge also reconciles retained
-reports. Only authoritative matching platform results clear the task token.
-A clean committed, confirmed completion advances the workline for follow-ups;
-dirty output, failure and conflicts retain artifacts and require an explicit
-continuation choice. A changed claim for an existing task is held for recovery;
-it is not automatically admitted as a replacement generation.
-
-For a confirmed failed run, explicit worktree recovery is available only after
-operator authorization and independent execution/preparation stop verification:
-`task.js recover <old-task@generation> --to <target-task@generation>
---baseline <resource-id>=<full-commit-SHA> --stopped` (one baseline per old-run resource).
-Use `task.js inspect <task-id>` to read bindings/generations. Select the original
-baseline or a verified commit explicitly. Old files, branches and failed status
-are retained. Every old worktree resource must match an unstarted continuation;
-added repositories/resources prepare normally with host credentials. Removed or
-replaced shared resources, in_place shared bindings and changed claims are refused. Replay the identical
-command after interruption; never delete occupancy records or report completion
-to bypass failure. See `docs/worktree-manager.md` for stop proof and replay rules.
-The target resumes normal preparation/start/card admission; recovery does not
-admit business work or grant merge/release/deployment permission.
-
-For an unstarted, undelivered task stuck in preparation, use
-`task.js abandon <task@generation> --reason 'concrete reason'` with operator
-authorization. The reason is frozen; repeat the identical command on interruption.
-Active/interrupted preparation is never assumed stopped. All files remain, and
-only exact owned stopped-preparation occupancy is released. A terminal report
-is confirmed only when the CLI returns a confirmed result; pending reports stay
-pending. Automatic Git failure handling retries transient/unknown errors at most
-three times, fails known permanent errors immediately, and leaves busy worklines
-waiting. Missing required context terminates immediately. See
-`docs/worktree-manager.md#failed-preparation-and-operator-abandon-42`.
-
-Runtime records stay in `components/multica`; repositories, worktrees and task
-materials stay in `workspace/multica`. They survive upgrades and are not cleaned
-up automatically. This bridge uses the existing live session and never launches
-an official Multica agent runtime.
+`task.js inspect` exposes lifecycle and historical records without changing them.
+The old `exec`, `locate`, and `recover` commands are retired. For an unstarted,
+undelivered task, `task.js abandon <task@generation> --reason <text> --stopped`
+requires independent verification that previous preparation and task work stopped.
+Never delete old records or report success to bypass a failure. Confirmed failures
+need new continuation tasks; the Agent chooses how to reuse preserved artifacts.
+See [Agent-owned resources](docs/agent-owned-resources.md) for migration, old queued
+cards, interrupted preparation, cancellation limits and Piper B1/C2 continuation.
+Runtime records and workspace materials survive upgrades; official Server is unchanged.
 
 ## Task-scoped context
 

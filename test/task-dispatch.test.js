@@ -34,7 +34,7 @@ function fixture(overrides = {}) {
 test('original claim start is confirmed before C4 handoff and frozen delivery survives restart', async () => {
   const f = fixture(); const d = f.make();
   await d.enqueue(task); await d.drain();
-  assert.deepEqual(f.events, ['lease', 'prepare', 'start', 'deliver']);
+  assert.deepEqual(f.events, ['start', 'deliver']);
   const record = f.state.get(task.id);
   assert.equal(record.delivery.content, 'fixed card');
   assert.equal(record.delivery.endpoint, `${task.id}@${record.generation}`);
@@ -51,21 +51,13 @@ test('lost start response resumes exact start without renewing an already-starte
   const d = f.make(); await d.enqueue(task); await d.drain();
   assert.equal(f.events.includes('deliver'), false);
   const resumed = f.make(); resumed.resume(); await resumed.drain();
-  assert.deepEqual(f.events, ['lease', 'prepare', 'start', 'start', 'deliver']);
+  assert.deepEqual(f.events, ['start', 'start', 'deliver']);
 });
-test('long asynchronous preparation renews the per-task lease', async () => {
-  const f = fixture({ prepare: () => new Promise(resolve => setTimeout(resolve, 45)) });
-  const d = f.make(); await d.enqueue(task); await d.drain();
-  assert.ok(f.events.filter(e => e === 'lease').length >= 3);
-  assert.equal(f.events.at(-1), 'deliver');
-});
-test('lease failure aborts preparation and never begins business or C4 handoff', async () => {
-  let leases = 0;
-  const f = fixture({ request(kind) { if (kind === 'lease' && ++leases > 1) throw Error('lease lost'); return task; },
-    prepare: ({ signal }) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Error('aborted')), { once: true })),
-  });
-  const d = f.make(); await d.enqueue(task); await d.drain();
-  assert.equal(f.events.includes('start'), false); assert.equal(f.events.includes('deliver'), false);
+test('repository preparation is never invoked even when credentials are unavailable', async () => {
+  const f = fixture({ prepare() { throw Error('Git credentials missing'); } });
+  const d = f.make(); await d.enqueue({ ...task, repos: [{ url: 'https://example.test/private', ref: 'secret-branch' }] }); await d.drain();
+  assert.deepEqual(f.events, ['start', 'deliver']);
+  assert.equal(await f.state.markAccepted(task.id, f.state.get(task.id).generation), true);
 });
 test('uncertain handoff retries frozen card, but accepted execution is never repeated', async () => {
   let deliveries = 0; const f = fixture({ deliver: () => ++deliveries > 1 });
@@ -114,7 +106,7 @@ test('scheduler failure parses generation endpoint and fails only the bound plai
   const result = await d.failScheduled(record.delivery.endpoint, 'scheduler unavailable');
   assert.equal(result.report.state, 'confirmed');
   assert.equal(result.execution.quiesced, true);
-  assert.equal(f.events.includes('quiesce'), true);
+  assert.equal(f.events.includes('quiesce'), false);
   assert.deepEqual(f.calls.filter(c => c.route.endsWith('/fail')), [{
     route: '/api/daemon/tasks/task/fail', body: { error: 'scheduler unavailable', failure_reason: 'runtime_offline' },
   }]);
@@ -145,50 +137,11 @@ test('scheduler failure loses admission race without quiescing or reporting the 
   assert.equal(f.state.get(task.id).execution.quiesced, false);
 });
 
-test('permanent preparation failure starts only to fail and never delivers; restart is idempotent', async () => {
-  const f = fixture({ prepare() { throw Object.assign(Error('secret raw diagnostic'), { code: 'PREPARATION_PERMANENT', preparationReason: 'authentication required or denied' }); } });
-  const d = f.make(); await d.enqueue(task); await d.drain();
-  const r = f.state.get(task.id);
-  assert.equal(r.report.state, 'confirmed');
-  assert.equal(r.report.payload.failure_reason, 'environment_prepare_failed');
-  assert.match(r.report.payload.error, /authentication required or denied/);
-  assert.equal(r.execution.quiesced, true);
-  assert.equal(r.delivery, undefined);
-  assert.deepEqual(f.events, ['lease', 'prepare', 'release', 'start', 'start', 'fail']);
-  const restarted = f.make(); restarted.resume(); await restarted.drain();
-  assert.equal(f.events.filter(e => e === 'fail').length, 1);
-  assert.equal(f.events.includes('deliver'), false);
-  await assert.rejects(f.state.markAccepted(task.id, r.generation), /frozen terminal|quiesced/);
-});
-test('transient preparation retries have durable exponential backoff and terminate after three attempts', async () => {
-  const f = fixture({ prepare() { throw Object.assign(Error('network'), { code: 'PREPARATION_TRANSIENT', preparationReason: 'network or timeout' }); } });
-  let d = f.make(); await d.enqueue(task); await d.drain();
-  assert.equal(f.state.get(task.id).report, null);
-  d = f.make(); d.resume(); await d.drain();
-  assert.equal(f.events.filter(e => e === 'prepare').length, 1);
-  f.advance(15_000); d.resume(); await d.drain();
-  f.advance(29_999); d.resume(); await d.drain();
-  assert.equal(f.events.filter(e => e === 'prepare').length, 2);
-  f.advance(1); d.resume(); await d.drain();
-  assert.equal(f.events.filter(e => e === 'prepare').length, 3);
-  assert.equal(f.state.get(task.id).report.state, 'confirmed');
-  assert.match(f.state.get(task.id).report.payload.error, /3 attempts/);
-});
-test('busy or unconfirmed-stop preparation remains waiting without spending retry budget', async () => {
-  for (const code of ['WORKTREE_BUSY', 'PROCESS_STOP_UNCONFIRMED']) {
-    const f = fixture({ prepare() { throw Object.assign(Error('waiting'), { code }); } });
-    const d = f.make(); await d.enqueue(task); await d.drain();
-    for (let i = 0; i < 4; i++) { f.advance(60_000); d.resume(); await d.drain(); }
-    assert.equal(f.state.get(task.id).report, null);
-    assert.equal(f.state.get(task.id).preparation_failure, undefined);
-    assert.equal(f.events.includes('release'), false);
-  }
-});
 test('C4 failures are handoff failures, never charged to preparation retry budget', async () => {
   const f = fixture({ deliver: () => false }); const d = f.make();
   await d.enqueue(task); await d.drain();
   for (let i = 0; i < 4; i++) { f.advance(60_000); d.resume(); await d.drain(); }
-  assert.equal(f.events.filter(e => e === 'prepare').length, 1);
+  assert.equal(f.events.filter(e => e === 'prepare').length, 0);
   assert.equal(f.events.filter(e => e === 'deliver').length, 5);
   assert.equal(f.state.get(task.id).report, null);
 });

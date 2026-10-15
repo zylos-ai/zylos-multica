@@ -1,3 +1,5 @@
+> Historical design, superseded by [Agent-owned resources](agent-owned-resources.md) in #44. The commands and automatic Git workflow below are no longer active. Retained for prior-version evidence.
+
 # Task worktree manager (#30)
 
 This is an integration module for the live-session bridge, not a runtime launcher.

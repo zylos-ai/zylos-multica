@@ -240,5 +240,7 @@ Development-time architecture notes live in [docs/DESIGN.md](./docs/DESIGN.md).
 
 [MIT](./LICENSE)
 
-Failed runs can explicitly transfer a workline to a verified continuation while
-preserving all artifacts and the failed result. See [recovery instructions](docs/worktree-manager.md#explicit-failed-run-recovery-39); no automatic cleanup or live recovery occurs.
+Tasks and full resource metadata are delivered without component Git preparation.
+The Agent chooses authorized repository access, working directories and continuation
+artifacts. Old files and failed results stay intact. See [Agent-owned resources](docs/agent-owned-resources.md)
+for execution, stopped acknowledgement and compatibility instructions.

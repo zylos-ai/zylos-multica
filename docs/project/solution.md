@@ -1,3 +1,5 @@
+> Current #44 contract: [Agent-owned resources](../agent-owned-resources.md) supersedes all automatic Git preparation, bound-command and workline-transfer descriptions below. Official Server is unchanged; the Agent owns access and working directories.
+
 # zylos-multica 组件方案（总方案）
 
 **状态**: DRAFT v2.3 — final check 补齐: 对账幂等机制 (GET status 前置检查) + P-1 契约补 type 字段 · **工程授权**: Howard 2026-08-17 晚（Multica 聊天）

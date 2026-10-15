@@ -1,3 +1,4 @@
+// HISTORICAL ONLY: no supported runtime callers since #44; see docs/agent-owned-resources.md.
 /** Task-bound directories for the live session; no runtime or global cwd changes. */
 import fs from 'node:fs';
 import path from 'node:path';

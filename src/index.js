@@ -11,7 +11,6 @@ import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
 import { createTaskState } from './lib/task-state.js';
 import { createTaskDispatcher } from './lib/task-dispatch.js';
-import { createWorktreeManager } from './lib/worktrees.js';
 import { DATA_DIR, getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
 import { ensureWorkspaceResolved } from './lib/workspace.js';
@@ -317,10 +316,9 @@ export function createBridge(initialConfig, dependencies = {}) {
   function taskDispatcher() {
     if (dispatcher) return dispatcher;
     const state = (dependencies.createTaskState ?? createTaskState)(config, { request });
-    const worktrees = (dependencies.createWorktreeManager ?? createWorktreeManager)({ config, lifecycle: state });
     const pick = (value, fields) => Object.fromEntries(fields.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
     dispatcher = createTaskDispatcher(config, {
-      state, worktrees, request, log,
+      state, request, log,
       root: dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'),
       snapshot: async task => {
         // Keep credentials only in the existing private token store. Prepared
@@ -330,12 +328,12 @@ export function createBridge(initialConfig, dependencies = {}) {
         const issue = task.issue_id ? await fetchIssue(task.issue_id) : null;
         if (task.issue_id && !issue) throw new Error('issue context unavailable');
         (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
-        const safeTask = pick(task, ['id', 'kind', 'workspace_id', 'agent_id', 'runtime_id', 'dispatched_at', 'issue_id', 'chat_session_id', 'thread_name', 'chat_message', 'chat_message_attachments', 'trigger_comment_id', 'trigger_comment_content', 'trigger_author_name', 'trigger_author_type', 'coalesced_comments', 'new_comment_count', 'handoff_note', 'attribution', 'is_leader_task', 'repos', 'project_resources']);
+        const safeTask = pick(task, ['id', 'kind', 'workspace_id', 'agent_id', 'runtime_id', 'dispatched_at', 'issue_id', 'chat_session_id', 'thread_name', 'chat_message', 'chat_message_attachments', 'trigger_comment_id', 'trigger_comment_content', 'trigger_author_name', 'trigger_author_type', 'coalesced_comments', 'new_comment_count', 'handoff_note', 'attribution', 'is_leader_task', 'repos', 'project_resources', 'prior_work_dir', 'work_dir', 'relative_work_dir', 'branch_name']);
         const dueAt = futureDueDate(issue, now());
         return { task: safeTask, context, issue: pick(issue, ['id', 'identifier', 'title', 'description', 'due_at', 'attachments']), ...(dueAt ? { dueAt: dueAt.toISOString() } : {}) };
       },
-      render: (entry, execution) => {
-        const routed = { ...entry.task, execution_generation: entry.generation, execution_bindings: execution?.bindings ?? [] };
+      render: entry => {
+        const routed = { ...entry.task, execution_generation: entry.generation };
         return entry.task.chat_session_id ? buildChatCard(routed, entry.context) : buildTaskCard(routed, entry.issue, entry.context);
       },
       deliver: async (delivery, task) => {

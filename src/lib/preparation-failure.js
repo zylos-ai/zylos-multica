@@ -1,3 +1,4 @@
+// HISTORICAL ONLY: no supported runtime callers since #44; see docs/agent-owned-resources.md.
 /** Frozen prestart termination, shared by automatic failure and operator abandon. */
 export async function abandonPreparation(state, worktrees, taskId, generation, reason) {
   let record = await state.abandonPreparation(taskId, generation, reason);

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Deliver resources to the Agent without component Git preparation; Agent chooses repository access and working directories.
+- Preserve task admission, stopped acknowledgement and exact result reconciliation; accept explicit Agent execution metadata.
+- Retain legacy files and reports, migrate unaccepted cards with original content preserved, and retire bound exec/locate/recover commands. See docs/agent-owned-resources.md.
+
 ### Fixed
 
 - Bound preparation retries, classify Git failures without exposing diagnostics,

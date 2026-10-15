@@ -1,54 +1,40 @@
 #!/usr/bin/env node
-/** Bound live-session execution helpers; never launches a new agent runtime. */
+/** Live-session task admission and explicit Agent stop acknowledgement. */
 import { getConfig } from '../src/lib/config.js';
 import { ensureWorkspaceResolved } from '../src/lib/workspace.js';
 import { createTaskState } from '../src/lib/task-state.js';
 import { parseTaskEndpoint } from '../src/lib/task-report.js';
-import { createWorktreeManager } from '../src/lib/worktrees.js';
-import { abandonPreparation } from '../src/lib/preparation-failure.js';
+import { inspectLegacyExecution, finishAbandonment } from '../src/lib/agent-execution.js';
 
-const [action, endpoint, resourceId, ...args] = process.argv.slice(2);
+const [action, endpoint, ...args] = process.argv.slice(2);
 try {
   const { taskId, generation } = action === 'inspect' && endpoint && !endpoint.includes('@')
-    ? { taskId: endpoint } : parseTaskEndpoint(endpoint);
+    ? parseTaskEndpoint(endpoint, { allowLegacy: true }) : parseTaskEndpoint(endpoint);
   const config = getConfig();
   if (!config.workspace_id) await ensureWorkspaceResolved(config);
   const state = createTaskState(config);
-  const manager = createWorktreeManager({ config, lifecycle: state });
   let result;
-  if (action === 'abandon' && resourceId === '--reason' && args.length === 1) {
-    result = await abandonPreparation(state, manager, taskId, generation, args[0]);
+  if (['exec', 'locate', 'recover'].includes(action)) {
+    throw new Error(`${action} is retired: Agent owns repository access, commands and continuation directories. Use inspect for historical paths; preserve old files and failed results. See docs/agent-owned-resources.md`);
+  } else if (action === 'abandon' && args[0] === '--reason' && args.length === 3 && args[2] === '--stopped') {
+    result = await finishAbandonment(state, taskId, generation, args[1], { config, acknowledgedStopped: true });
     if (result.report?.state !== 'confirmed') process.exitCode = 1;
-  } else if (action === 'begin' && !resourceId) {
-    // Confirm the original exact claim again before accepting business work.
+  } else if (action === 'begin' && !args.length) {
     await state.start(taskId, generation);
     result = { accepted: await state.markAccepted(taskId, generation), task_id: taskId, generation };
-  } else if (action === 'locate' && resourceId && !args.length) {
-    if (!state.get(taskId)?.execution.accepted) throw new Error('begin this task before using bound directories');
-    result = await manager.locate(taskId, generation, resourceId);
-  } else if (action === 'exec' && resourceId && args[0] === '--' && args.length > 1) {
-    if (!state.get(taskId)?.execution.accepted) throw new Error('begin this task before executing commands');
-    result = await manager.run(taskId, generation, resourceId, args.slice(1));
-    process.exitCode = result.code ?? 1;
-  } else if (action === 'quiesce' && resourceId === '--stopped' && !args.length) {
-    result = await manager.quiesce(taskId, generation, { acknowledgedStopped: true });
-    await state.markQuiesced(taskId, generation);
-  } else if (action === 'recover' && resourceId === '--to') {
-    const destination = parseTaskEndpoint(args[0]);
-    const baselines = {};
-    let stopped = false;
-    for (let i = 1; i < args.length; i++) {
-      if (args[i] === '--stopped' && !stopped) { stopped = true; continue; }
-      if (args[i] !== '--baseline' || !args[i + 1]) throw new Error('use --baseline resource=exact-commit and --stopped');
-      const match = /^([^=]+)=([0-9a-f]{40})$/.exec(args[++i]);
-      if (!match || Object.hasOwn(baselines, match[1])) throw new Error('invalid or duplicate baseline');
-      Object.defineProperty(baselines, match[1], { value: match[2], enumerable: true });
+  } else if (action === 'quiesce' && args[0] === '--stopped') {
+    const metadata = {};
+    for (let i = 1; i < args.length; i += 2) {
+      const key = { '--work-dir': 'work_dir', '--branch': 'branch_name', '--pr-url': 'pr_url' }[args[i]];
+      if (!key || !args[i + 1] || Object.hasOwn(metadata, key)) throw new Error('invalid or duplicate execution metadata');
+      metadata[key] = args[i + 1];
     }
-    result = await manager.recover(taskId, generation, destination.taskId, destination.generation, { acknowledgedStopped: stopped, baselines });
-  } else if (action === 'inspect' && !resourceId) {
-    result = manager.inspect(taskId);
-    if (!result || (generation && result.generation !== generation)) throw new Error('worktree binding generation mismatch');
-  } else throw new Error('Usage: task.js <begin|locate|exec|quiesce|inspect|recover|abandon> <task@generation> [--reason text | resource -- command args | --stopped | --to task@generation --baseline resource=commit --stopped]');
+    result = await state.acknowledgeStopped(taskId, generation, metadata);
+  } else if (action === 'inspect' && !args.length) {
+    const record = state.get(taskId);
+    if (!record || (generation && record.generation !== generation)) throw new Error('task generation mismatch');
+    result = { task: record, legacy: inspectLegacyExecution(config, taskId) };
+  } else throw new Error('Usage: task.js begin|inspect <task@generation> | quiesce <task@generation> --stopped [--work-dir path] [--branch name] [--pr-url url] | abandon <task@generation> --reason text --stopped');
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(`FAILED: ${error.message}`);

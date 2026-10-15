@@ -26,12 +26,11 @@ test('plain terminal endpoint remains usable for legacy tasks but rejects a boun
   assert.equal(calls.length, 1);
 });
 
-test('single binding reports work directory and branch without claiming a replacement durable directory', async () => {
+test('Agent stop acknowledgement supplies explicit work directory and branch', async () => {
   const config = { base_url: 'https://example.test', workspace_id: 'ws', daemon_id: 'daemon' };
   const task = { id: 'bound', workspace_id: 'ws', runtime_id: 'runtime', agent_id: 'agent', dispatched_at: '2026-10-15T01:02:03.123456Z' };
   const calls = [];
   const options = { root: fs.mkdtempSync(path.join(os.tmpdir(), 'multica-report-')), removeTaskToken() {},
-    executionMetadata: () => ({ bindings: [{ cwd: '/fixture/worktree', branch: 'task-branch' }] }),
     request: async (_config, _method, route, body) => {
       calls.push({ route, body });
       return route.endsWith('/start') ? { ...task, status: 'running' } : { ...task, status: 'completed', result: body, ...body };
@@ -39,7 +38,7 @@ test('single binding reports work directory and branch without claiming a replac
   };
   const state = createTaskState(config, options);
   const { generation } = await state.registerClaim(task);
-  await state.start(task.id, generation); await state.markAccepted(task.id, generation); await state.markQuiesced(task.id, generation);
+  await state.start(task.id, generation); await state.markAccepted(task.id, generation); await state.acknowledgeStopped(task.id, generation, { work_dir: '/fixture/worktree', branch_name: 'task-branch' });
   const result = await reportFromCLI(config, `bound@${generation}`, 'complete', 'done', options);
   assert.equal(result.report.state, 'confirmed');
   const body = calls.find(call => call.route.endsWith('/complete')).body;
