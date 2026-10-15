@@ -62,7 +62,8 @@ test('freeze precedes POST; confirmed receipt precedes token cleanup; output pre
   let f;
   f = await fixture(t, { removeTaskToken: () => assert.equal(createTaskState(config, f.options).get(task.id).report.state, 'confirmed') });
   await f.begin();
-  f.options.request = async (_c, _m, _p, body) => {
+  f.options.request = async (_c, _m, route, body) => {
+    if (route.endsWith('/start')) return remote('running');
     const disk = f.state.get(task.id);
     assert.equal(disk.report.state, 'pending_unknown');
     assert.deepEqual(disk.report.payload, body);
@@ -89,6 +90,7 @@ test('lost completion response reads authority after restart without duplicate P
   await f.begin();
   let posts = 0;
   const recovered = createTaskState(config, { ...f.options, request: async (_c, method, route, body) => {
+    if (route.endsWith('/start')) return remote('running');
     if (method === 'POST') { posts++; throw new Error('response lost'); }
     return [remote('completed', { result: { output: 'done' } })];
   } });
@@ -104,6 +106,7 @@ test('agent history pagination follows cursor and keeps issue failure/unavailabl
   const routes = [];
   const recovered = createTaskState(config, { ...f.options, request: async (_c, method, route, body, opts) => {
     routes.push(route);
+    if (route.endsWith('/start')) return remote('running');
     if (method === 'POST') throw new Error('lost');
     if (route.includes('task-runs')) return [];
     assert.equal(opts.includeHeaders, true);
@@ -118,7 +121,7 @@ test('permission denial retains frozen report and token; changed payload, new cl
   const f = await fixture(t);
   await f.begin();
   let posts = 0;
-  const pending = createTaskState(config, { ...f.options, request: async (_c, method) => { if (method === 'POST') posts++; throw new Error('403'); } });
+  const pending = createTaskState(config, { ...f.options, request: async (_c, method, route) => { if (route.endsWith('/start')) return remote('running'); if (method === 'POST') posts++; throw new Error('403'); } });
   assert.equal((await pending.report(task.id, f.generation, 'complete', { output: 'done' })).report.state, 'pending_unknown');
   posts = 0;
   await assert.rejects(pending.report(task.id, f.generation, 'complete', { output: 'different' }), /conflicts/);
@@ -139,7 +142,7 @@ for (const [status, extra, expected] of [
   ['completed', { id: 'another', result: { output: 'done' } }, 'pending_unknown'],
 ]) test(`HTTP 200 ${status} -> ${expected}: ${JSON.stringify(extra)}`, async t => {
   const f = await fixture(t); await f.begin();
-  const state = createTaskState(config, { ...f.options, request: async () => remote(status, extra) });
+  const state = createTaskState(config, { ...f.options, request: async (_c, _m, route) => route.endsWith('/start') ? remote('running') : remote(status, extra) });
   const result = await state.report(task.id, f.generation, 'complete', { output: 'done' });
   assert.equal(result.report.state, expected);
   assert.equal(f.removed.length, ['confirmed', 'conflict', 'superseded'].includes(expected) ? 1 : 0);
@@ -149,7 +152,7 @@ test('running readback replay requires precise start gate, frozen payload and ba
   for (const action of ['complete', 'fail']) {
     const f = await fixture(t); await f.begin();
     const calls = [];
-    let allowStart = false;
+    let allowStart = true;
     const state = createTaskState(config, { ...f.options, request: async (_c, method, route, body) => {
       calls.push({ method, route, body });
       if (method === 'GET') return [remote('running')];
@@ -157,7 +160,7 @@ test('running readback replay requires precise start gate, frozen payload and ba
       throw new Error('lost');
     } });
     await state.report(task.id, f.generation, action, { [action === 'complete' ? 'output' : 'error']: 'done' });
-    calls.length = 0;
+    allowStart = false; calls.length = 0;
     await state.reconcile(task.id, { generation: f.generation, replay: true });
     assert.ok(calls.every(c => c.method === 'GET')); // bounded backoff
     f.advance(10000); calls.length = 0;
@@ -192,7 +195,7 @@ test('two independent state instances serialize report; second payload cannot ov
   const entered = new Promise(r => { signalEntered = r; });
   const held = new Promise(r => { release = r; });
   let posts = 0;
-  const state = createTaskState(config, { ...f.options, request: async (_c, _m, _p, body) => { posts++; signalEntered(); await held; return remote('completed', { result: body }); } });
+  const state = createTaskState(config, { ...f.options, request: async (_c, _m, route, body) => { if (route.endsWith('/start')) return remote('running'); posts++; signalEntered(); await held; return remote('completed', { result: body }); } });
   const first = state.report(task.id, f.generation, 'complete', { output: 'first' });
   await entered;
   const second = createTaskState(config, f.options).report(task.id, f.generation, 'complete', { output: 'second' });
@@ -245,14 +248,14 @@ test('delivery card is durable before start, immutable, and replay acceptance is
 test('exact submitted metadata confirms only when result and task metadata agree', async t => {
   const f = await fixture(t); await f.begin();
   const payload = { output: 'done', work_dir: '/private/worktree', branch_name: 'branch', pr_url: 'https://example.test/pr/1' };
-  const state = createTaskState(config, { ...f.options, request: async () => remote('completed', { result: payload, work_dir: payload.work_dir, branch_name: payload.branch_name }) });
+  const state = createTaskState(config, { ...f.options, request: async (_c, _m, route) => route.endsWith('/start') ? remote('running') : remote('completed', { result: payload, work_dir: payload.work_dir, branch_name: payload.branch_name }) });
   assert.equal((await state.report(task.id, f.generation, 'complete', payload)).report.state, 'confirmed');
 });
 
 test('completed response with wrong submitted top-level metadata remains a conflict', async t => {
   const f = await fixture(t); await f.begin();
   const payload = { output: 'done', work_dir: '/private/worktree' };
-  const state = createTaskState(config, { ...f.options, request: async () => remote('completed', { result: payload, work_dir: '/another' }) });
+  const state = createTaskState(config, { ...f.options, request: async (_c, _m, route) => route.endsWith('/start') ? remote('running') : remote('completed', { result: payload, work_dir: '/another' }) });
   const result = await state.report(task.id, f.generation, 'complete', payload);
   assert.equal(result.report.state, 'conflict');
   assert.deepEqual(result.report.differences, ['task.work_dir']);
@@ -263,6 +266,7 @@ test('all successful pages without a task and repeated cursors remain pending, n
     const f = await fixture(t); await f.begin();
     let posts = 0;
     const state = createTaskState(config, { ...f.options, request: async (_c, method, route) => {
+      if (route.endsWith('/start')) return remote('running');
       if (method === 'POST') { posts++; throw new Error('lost'); }
       if (route.includes('task-runs')) return [];
       return { data: [], headers: repeat ? { 'x-agent-tasks-next-cursor': 'again' } : {} };
@@ -272,4 +276,51 @@ test('all successful pages without a task and repeated cursors remain pending, n
     assert.equal(posts, 1);
     assert.equal(f.removed.length, 0);
   }
+});
+
+test('initial terminal report revalidates original claim; cached start cannot complete or fail a redispatched task', async t => {
+  for (const action of ['complete', 'fail']) {
+    const f = await fixture(t); await f.begin();
+    const calls = [];
+    const state = createTaskState(config, { ...f.options, request: async (_c, method, route, body) => {
+      calls.push({ method, route, body });
+      if (route.endsWith('/start')) {
+        assert.equal(body.dispatched_at, task.dispatched_at);
+        assert.equal(f.state.get(task.id).report.action, action, 'pending must already be durable');
+        throw Object.assign(new Error('original claim was superseded'), { status: 409 });
+      }
+      if (method === 'GET') return [remote('running')]; // seconds cannot prove same claim
+      return remote(action === 'complete' ? 'completed' : 'failed', { result: body, error: body.error, failure_reason: body.failure_reason });
+    } });
+    const payload = { [action === 'complete' ? 'output' : 'error']: 'done' };
+    const result = await state.report(task.id, f.generation, action, payload);
+    assert.equal(result.report.state, 'pending_unknown');
+    assert.equal(result.report.attempts, 0);
+    assert.equal(calls.filter(call => call.route.endsWith(`/${action}`)).length, 0);
+    assert.equal(f.removed.length, 0);
+    assert.deepEqual(f.state.get(task.id).report.payload[action === 'complete' ? 'output' : 'error'], 'done');
+  }
+});
+
+test('failed report checks every submitted observable metadata field before confirmation', async t => {
+  for (const changed of [null, 'work_dir', 'branch_name', 'durable_work_dir']) {
+    const f = await fixture(t); await f.begin();
+    const payload = { error: 'failed', work_dir: '/expected', branch_name: 'expected', durable_work_dir: '/durable' };
+    const fields = { error: 'failed', failure_reason: 'agent_error', work_dir: '/expected', branch_name: 'expected', durable_work_dir: '/durable' };
+    if (changed) fields[changed] = 'different';
+    const state = createTaskState(config, { ...f.options, request: async (_c, _m, route) => route.endsWith('/start') ? remote('running') : remote('failed', fields) });
+    const result = await state.report(task.id, f.generation, 'fail', payload);
+    assert.equal(result.report.state, changed ? 'conflict' : 'confirmed');
+    if (changed) assert.deepEqual(result.report.differences, [`task.${changed}`]);
+  }
+});
+
+test('failure session mutations absent from authority response are rejected before pending or POST', async t => {
+  const f = await fixture(t); await f.begin();
+  for (const extra of [{ session_id: 'session' }, { session_rollout_missing: true }, { retired_session_id: 'retired' }]) {
+    await assert.rejects(f.state.report(task.id, f.generation, 'fail', { error: 'failed', ...extra }), /invalid terminal field/);
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.state.get(task.id).report, null);
+  assert.equal(f.removed.length, 0);
 });

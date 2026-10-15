@@ -109,7 +109,7 @@ test('send.js completes text and rejects media without a request', async () => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       const id = request.url.split('/')[4];
       const payload = JSON.parse(body);
-      response.end(JSON.stringify({ id, workspace_id: 'workspace-1', agent_id: 'agent-1', runtime_id: 'runtime-1', issue_id: 'issue-1', chat_session_id: '', status: request.url.endsWith('/fail') ? 'failed' : 'completed', result: payload, error: payload.error, failure_reason: payload.failure_reason || '' }));
+      response.end(JSON.stringify({ id, workspace_id: 'workspace-1', agent_id: 'agent-1', runtime_id: 'runtime-1', issue_id: 'issue-1', chat_session_id: '', status: request.url.endsWith('/start') ? 'running' : request.url.endsWith('/fail') ? 'failed' : 'completed', result: payload, error: payload.error, failure_reason: payload.failure_reason || '' }));
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -152,7 +152,7 @@ test('send.js completes text and rejects media without a request', async () => {
   const [remainingTokenFile] = fs.readdirSync(tokenDir);
   assert.equal(fs.statSync(path.join(tokenDir, remainingTokenFile)).mode & 0o777, 0o600);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(requests, [
+  assert.deepEqual(requests.filter(request => !request.url.endsWith('/start')), [
     { url: '/api/daemon/tasks/task-1/complete', body: { output: 'done' } },
     { url: '/api/daemon/tasks/task-3/progress', body: { summary: 'halfway' } },
     { url: '/api/daemon/tasks/task-2/fail', body: { error: 'blocked', failure_reason: 'agent_error' } },

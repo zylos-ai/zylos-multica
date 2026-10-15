@@ -12,7 +12,9 @@ import { removeTaskToken } from './task-tokens.js';
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const closed = state => ['confirmed', 'conflict', 'superseded'].includes(state);
 const completeFields = { output: '', pr_url: '', session_id: '', work_dir: '', durable_work_dir: '', branch_name: '', session_rollout_missing: false, retired_session_id: '' };
-const failFields = { error: '', failure_reason: '', session_id: '', work_dir: '', durable_work_dir: '', branch_name: '', session_rollout_missing: false, retired_session_id: '' };
+// Fail responses do not expose session mutation fields; do not accept writes
+// whose outcome cannot be verified through the pinned public readback API.
+const failFields = { error: '', failure_reason: '', work_dir: '', durable_work_dir: '', branch_name: '' };
 function string(value, field) {
   if (typeof value !== 'string' || !value || value.includes('\0') || !value.isWellFormed()) throw new Error(`invalid ${field}`);
   return value;
@@ -151,9 +153,16 @@ export function createTaskState(config, options = {}) {
         report.differences = differences;
       }
     } else if (['failed', 'cancelled'].includes(remote.status)) {
-      report.state = report.action === 'fail' && remote.status === 'failed'
-        && remote.error === report.payload.error
-        && (remote.failure_reason || '') === (report.payload.failure_reason || '') ? 'confirmed' : 'superseded';
+      if (report.action !== 'fail' || remote.status !== 'failed') report.state = 'superseded';
+      else {
+        const differences = ['error', 'failure_reason'].filter(field => (remote[field] ?? '') !== (report.payload[field] ?? ''));
+        for (const field of ['work_dir', 'branch_name', 'durable_work_dir']) {
+          // Fail SQL COALESCE preserves old metadata for empty/omitted input.
+          if (report.payload[field] && remote[field] !== report.payload[field]) differences.push(`task.${field}`);
+        }
+        report.state = differences.length ? 'conflict' : 'confirmed';
+        report.differences = differences;
+      }
     } else if (['queued', 'dispatched', 'waiting_local_directory'].includes(remote.status)) {
       report.state = 'pending_not_running';
     } else report.state = 'pending_unknown';
@@ -198,6 +207,15 @@ export function createTaskState(config, options = {}) {
       || report.dispatched_at !== record.dispatched_at || report.payload_digest !== digest(payloadFor(report.action, report.payload))) {
       throw new Error('frozen report binding mismatch');
     }
+    // Cached start_confirmed predates any later claim change. Revalidate the
+    // exact original claim before EVERY terminal write, including the first.
+    try { await startRequest(record); }
+    catch {
+      record.report.state = 'pending_unknown';
+      record.report.reason = 'original claim start confirmation unavailable';
+      save(record);
+      return reconcileLocked(record, false);
+    }
     record.report.attempts++;
     record.report.last_attempt_at = now();
     record.report.state = 'pending_unknown';
@@ -225,8 +243,6 @@ export function createTaskState(config, options = {}) {
     // Fail can cause child retries; no automatic/manual blind fail replay.
     if (record.report.action !== 'complete' || !record.start_confirmed || !record.execution.quiesced) return record;
     if (record.report.attempts >= 3 || now() - record.report.last_attempt_at < 1000 * 2 ** record.report.attempts) return record;
-    try { await startRequest(record); }
-    catch { record.report.reason = 'original claim start confirmation unavailable'; return save(record); }
     return send(record);
   }
   return {

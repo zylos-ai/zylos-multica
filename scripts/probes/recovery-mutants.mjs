@@ -14,9 +14,10 @@ const mutants = [
     ['    save(record);\n    let response;', '    let response;'],
   ], 'failed pending write'],
   ['ignore-generation', [['record.generation !== generation', 'false']], 'permission denial retains'],
-  ['http200-is-success', [["report.state = differences.length ? 'conflict' : 'confirmed';", "report.state = 'confirmed';"]], 'HTTP 200 completed -> conflict'],
+  ['http200-is-success', [["const differences = Object.keys(completeFields).filter(k => (remote.result[k] ?? completeFields[k]) !== (report.payload[k] ?? completeFields[k]));", "const differences = [];"]], 'HTTP 200 completed -> conflict'],
   ['empty-body-start', [['      runtime_id: record.runtime_id, dispatched_at: record.dispatched_at,\n    });', '    });']], 'claims and starts persist'],
-  ['skip-replay-claim-check', [['    try { await startRequest(record); }\n    catch {', '    try { /* mutant */ }\n    catch {']], 'running readback replay'],
+  ['skip-replay-claim-check', [['    try { await startRequest(record); }\n    catch {', '    try { /* mutant */ }\n    catch {']], 'initial terminal report revalidates'],
+  ['ignore-fail-metadata', [['          // Fail SQL COALESCE preserves old metadata for empty/omitted input.\n          if (report.payload[field] && remote[field] !== report.payload[field]) differences.push(`task.${field}`);', '          /* mutant ignores submitted failed-task metadata */']], 'failed report checks every'],
 ];
 for (const [name, replacements, pattern] of mutants) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-recovery-mutant-'));
