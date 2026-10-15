@@ -140,3 +140,6 @@ agent 回复 ──→ 标准 reply via: c4-send multica <task_id> → scripts/s
 ---
 
 *方向 B、分流规则、daemon 协议面为桥方案已拍板前提，不在本方案重议。*
+
+
+#30附件目录按用途分离：下载材料归`~/zylos/workspace/multica/tasks/<task-id-sha256>/attachments/`；claim附件白名单作为运行授权记录，归`~/zylos/components/multica/task-downloads/<task-id-sha256>/attachments.json`。输出目录只能在该任务attachments目录内，不能覆盖运行记录。两者均跨代码升级保留，不搬动现有文件、不自动清理。

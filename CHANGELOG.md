@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Keep downloaded task materials under `workspace/multica/tasks`, separate from component-owned attachment allowlists; output paths cannot target runtime state.
+
 ### Added
 
 - Task-scoped `attachment download` with claimed-ID checks, binary streaming,

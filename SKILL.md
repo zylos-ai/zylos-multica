@@ -141,9 +141,12 @@ and workspace; signed absolute download URLs receive no authorization headers.
 The result is `{id, filename, path, size}` (actual downloaded bytes), with the normal
 `--output json|table` conventions. Downloads are limited to 100 MiB and 60 seconds.
 
-Files go under `~/zylos/components/multica/task-downloads/<task-id-sha256>/files/`.
-`--output-dir` selects a directory relative to that task's hashed directory, or an
-absolute path beneath it. It does not select an arbitrary machine directory. Paths
+Downloaded work materials go under
+`~/zylos/workspace/multica/tasks/<task-id-sha256>/attachments/`.
+The runtime allowlist stays in
+`~/zylos/components/multica/task-downloads/<task-id-sha256>/attachments.json`.
+`--output-dir` selects a directory relative to the task's attachments directory, or
+an absolute path beneath it. It cannot write into the runtime manifest directory. It does not select an arbitrary machine directory. Paths
 with symlink components, unsafe filenames, and existing destinations are refused;
 choose another task-local directory to keep a second copy. Files and the manifest
 are private, retained after task completion, and not cleaned up automatically.
