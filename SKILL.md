@@ -22,6 +22,7 @@ lifecycle:
   preserve:
     - config.json
     - logs/
+    - execution/
 
 upgrade:
   repo: zylos-ai/zylos-multica

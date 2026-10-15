@@ -1,0 +1,102 @@
+# Task worktree manager (#30)
+
+This is an integration module for the live-session bridge, not a runtime launcher.
+It is not wired into production claim processing and does not advertise
+`local-worktree-v1`. Local shared-Git metadata behavior remains subject to the
+owner's implementation choice; tests only use disposable fixture repositories.
+
+## Storage and source effects
+
+- Runtime metadata: `~/zylos/components/multica/execution/{bindings,operations,owners,heads}/`.
+  SKILL preserves `execution/` across upgrades. JSON files use 0600; newly created
+  directories use 0700. Metadata contains no task token or command argv.
+- Work content: `~/zylos/workspace/multica/tasks/<task hash>/<generation hash>/<resource hash>/`
+  holds worktrees and private snapshot indexes. `~/zylos/workspace/multica/repos/<URL hash>/`
+  holds bare caches for claim-resolved Git repositories. Existing repositories are
+  not moved. Both roots can be injected for isolated tests.
+- `local_directory/worktree` currently uses standard shared Git metadata: original
+  source worktree files and its index remain unchanged, but the source Git object
+  database receives snapshots, `refs/zylos/snapshots/...` pins those snapshots,
+  `refs/heads/zylos/...` identifies task branches, and Git registers worktree admin
+  files under its common Git directory. Git may create normal temporary/lock files.
+  This is not “no writes to the original repository.” A fully controlled copy
+  instead requires a separate object transfer/cache plus dirty-content transfer,
+  duplicates disk use, and needs an explicit way to import/push delivered branches.
+- `in_place` uses only the declared directory, with realpath-based exclusion. The
+  directory remains externally owned. No worktree, branch or source snapshot is
+  created for this mode. Unknown modes are rejected; omitted mode means in_place,
+  matching the pinned server. Leader tasks skip local-directory assignment,
+  following the pinned upstream; claim-resolved repository resources remain available.
+  This does not implement squad orchestration.
+
+There is no automatic deletion, reset, pruning, garbage collection, commit of
+agent work, or push. Snapshot commits only capture source input; task changes are
+committed by the execution agent when appropriate. Ignored untracked files are
+excluded; tracked/force-staged files are preserved. Untracked inputs are bounded
+at 2000 files / 200 MiB, excluding upstream-generated `.agent_context`/`.multica`
+sidecars. File content/index preservation tests do not claim that Git refs and
+objects stay unchanged.
+
+## Coordinator API
+
+`createWorktreeManager({config,lifecycle,dataDir?,workRoot?,git?})` requires the
+lifecycle API's synchronous `assertCurrent({taskId,generation,requireRunning})`
+and `get(taskId)`. The coordinator registers the immutable generation; this
+manager never invents or replaces it.
+
+- `await prepare(task, resources?, {generation,signal})` resolves claim resources
+  by default, acquires all workline/path ownership in stable order, and prepares
+  each independent binding. Busy raises `WorktreeBusyError` immediately; the
+  coordinator keeps the server preparation lease and retries. On acquisition
+  failure, only newly acquired locks from that attempt are released, before Git
+  mutation. Preparation failures retain bindings/owned content for recovery.
+- `inspect(taskId)` is a read-only local record query. `await locate(taskId,
+  generation,resourceId)` checks lifecycle running admission, workline/path owner,
+  real cwd, Git root/common directory and branch. It returns the exact binding.
+- `await run(taskId,generation,resourceId,argv,{signal?})` runs one command with
+  explicit cwd (no shell-string interpolation), records durable running/exited
+  status, and returns output/exit status/cwd/branch. One task operation is allowed
+  at a time, including across processes. The running gate is checked again after
+  asynchronous Git validation and immediately before command spawn.
+- `await cancelCommands(taskId,generation)` stops commands owned by this manager
+  instance and waits for their exit. It cannot prove another process's command
+  stopped and never releases workline ownership or substitutes for live-session
+  stop acknowledgement. On Unix each command/Git operation has its own process
+  group; cancellation retains TERM→KILL escalation even if the direct child closes
+  early, then confirms no live descendants remain (Linux /proc group check;
+  zombies cannot write). Unknown group termination keeps execution blocked.
+- `await quiesce(taskId,generation,{acknowledgedStopped:true})` requires the live
+  session to confirm it will perform no further native writes, and rejects any
+  running/unknown command. It records worktree Git status/commit, preserves dirty
+  artifacts, and releases only shared in_place path occupancy. Workline ownership
+  remains until confirmed delivery; the coordinator then calls lifecycle
+  `markQuiesced`. Native tool usage is convention-based, not a security sandbox.
+- `await confirmDelivery(taskId,generation)` requires lifecycle report state
+  `confirmed`/action `complete`, quiescence and clean unchanged committed worktree
+  output. It updates confirmed line heads and releases line occupancy. A successor
+  gets a new directory/branch from that immutable commit. Changed user source
+  since the prior snapshot or dirty delivery requires an explicit baseline choice;
+  it is never silently discarded or merged. in_place has no reusable commit head.
+- `acknowledgeStopped(taskId,generation,{acknowledgedStopped:true})` is an explicit
+  recovery action after independently confirming prior execution/preparation is
+  stopped. It clears unknown command/operation records, retaining all artifacts.
+  It refuses active operations in this manager. No PID, TTL or platform-cancelled
+  status is treated as proof that an older process stopped.
+
+Git preparation is asynchronous, has a 120-second operation timeout and accepts
+coordinator cancellation. The coordinator's 15-second lease timer must remain
+active through preparation and generation-aware start. This module does not call
+platform start/claim/lease APIs itself. Only the coordinator may enable executable
+C4 delivery after start is confirmed. `worktree-cli.js` exports the parsing helper
+for coordinator wiring (`locate`, `exec`, `quiesce`, `inspect`); it does not add a
+standalone runtime or service.
+
+## Evidence and remaining integration
+
+Tests use real temporary Git repositories for dirty-source/index preservation,
+separate worktrees, same-line and in_place exclusion, confirmed continuation,
+interrupted preparation recovery, stale/start admission, command quiescence,
+repo cache resolution and CLI cwd. Timer/cancellation tests cover nonblocking Git
+preparation. These are local fixtures, not live Multica/C4 E2E acceptance. Source
+contracts: pinned v0.6.2 `daemon/local_directory.go`, `execenv/local_worktree.go`,
+`handler/project_resource.go:430–461`. No capability/version changes are made.
