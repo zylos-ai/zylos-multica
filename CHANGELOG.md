@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Broaden the direct-HTTP business CLI across issue queries and mutations,
+  comments, labels, subscribers, metadata, all 11 property types, projects and
+  resources, workspace members, and agent/squad reads. Add task-token chat
+  threads and bounded multipart chat attachment uploads without an official CLI
+  dependency.
+- Add issue reorder using a paginated status/project column and wakeup
+  list/get/runs reads. Wakeup mutations/events remain deferred pending lifecycle
+  validation; run commands currently require full UUIDs rather than short IDs.
+
+### Changed
+
+- Default issue update/status/assign to suppress execution; require `--start`
+  to opt in. Reorder also suppresses execution. Preserve single-attempt writes,
+  controlled file paths and protected configuration authentication.
+- Pin the business contract inventory to official v0.6.2 without changing the
+  component or advertised protocol version. Verification uses local fixtures;
+  live server writes and full official parity remain unverified.
+
 ## [0.5.0] - 2026-10-16
 
 ### Changed

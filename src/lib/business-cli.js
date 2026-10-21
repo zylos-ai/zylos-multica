@@ -5,6 +5,7 @@ import { downloadAttachment } from './attachments.js';
 import { multicaRequest } from './multica-api.js';
 import { loadTaskToken } from './task-tokens.js';
 import { ensureWorkspaceResolved } from './workspace.js';
+import { planExtendedCommand } from './business-commands.js';
 
 const ISSUE_SORTS = new Set(['position', 'title', 'created_at', 'start_date', 'due_date', 'priority']);
 const DIRECTIONAL_SORTS = new Set(['title', 'created_at', 'start_date', 'due_date', 'priority']);
@@ -374,9 +375,14 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   const io = {
     stdin: dependencies.stdin ?? process.stdin,
     stdout: dependencies.stdout ?? process.stdout,
+    stderr: dependencies.stderr ?? process.stderr,
     cwd: dependencies.cwd ?? process.cwd(),
   };
   const { positionals, flags } = parseArgs(argv);
+  const extendedPlan = planExtendedCommand(positionals, flags, {
+    one, many, bool, rejectUnknown, requireText, parseInteger, assertOutput,
+    resolveTextInput, resolveIssue, io, readTaskToken,
+  });
   const [group, command, subcommand, ...rest] = positionals;
   // --output is pre-validated before dispatch — including before workspace
   // resolution, which on a slug-only config is itself a network call — so an
@@ -393,9 +399,10 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   }
   const resolveWorkspace = dependencies.ensureWorkspaceResolved ?? ensureWorkspaceResolved;
   // chat history authenticates with the task-scoped token, not the PAT.
-  if (group === 'issue') await resolveWorkspace(config, { request });
+  if (group === 'issue' || extendedPlan?.workspace) await resolveWorkspace(config, { request });
   let response;
-  if (group === 'attachment' && command === 'download') {
+  if (extendedPlan) response = { result: await extendedPlan.execute(config, request), output: extendedPlan.output };
+  else if (group === 'attachment' && command === 'download') {
     rejectUnknown(flags, new Set(['task', 'output-dir', 'output']));
     if (!subcommand || rest.length) throw new Error('attachment download requires exactly one attachment ID');
     const taskId = requireText(one(flags, 'task'), '--task').trim();
@@ -412,7 +419,7 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);
   } else if (group === 'chat' && command === 'history' && subcommand === undefined) response = await chatHistory(config, flags, request, readTaskToken);
-  else throw new Error('usage: multica.js issue <create|get|list|comment add|comment list> ... | chat history ... | attachment download <id> --task <id> ...');
+  else throw new Error('usage: multica.js <issue|project|label|property|workspace|agent|squad|chat|attachment> <command> ...; see SKILL.md Business CLI and docs/business-cli-coverage.md');
 
   if (response.output === 'table' && isCommentAdd) printCommentReceipt(response.result, io.stdout);
   else if (response.output === 'table') printTable(response.result, io.stdout);

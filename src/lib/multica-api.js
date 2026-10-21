@@ -9,10 +9,10 @@ export async function multicaRequest(config, method, apiPath, body, options = {}
     method,
     headers: {
       Authorization: `Bearer ${config.pat}`,
-      'Content-Type': 'application/json',
+      ...(!options.multipart ? { 'Content-Type': 'application/json' } : {}),
       ...(options.workspaceHeader ? { 'X-Workspace-Id': config.workspace_id } : {}),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: options.multipart ?? (body === undefined ? undefined : JSON.stringify(body)),
     signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
   });
 

@@ -14,7 +14,7 @@
 
 - **业务组（对齐范围）**：`issue`（list/get/create/update/assign/status/comment/label/subscriber…）、`chat`（history/thread）、`attachment`、`project`、`label`、`property`、`agent`/`squad`（查询类）、`workspace`。
 - **托管组（永不做）**：`daemon`、`runtime`、`runtime_profile`、`setup`、`plugin`、`skill`、`update`。
-- 实现分期：**按实际用到的操作加批**，不求命令面求全。首批（v0.2.0）：quick-create + `issue create/get/list/comment` + `chat history`。
+- **尽可能覆盖官方业务命令**（Howard，issue #47）。动工先按锁定服务端版本列出完整清单、实现状态和排除理由；不再只按用到一条补一条。当前清单见 `docs/business-cli-coverage.md`。
 
 ## 3. "瞄 CLI"原则：官方实现是坑解参考库
 
