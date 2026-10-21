@@ -1,8 +1,9 @@
 /** CLI boundary: generation belongs to the caller, never inferred from disk. */
 import { createTaskState } from './task-state.js';
 import { ensureWorkspaceResolved } from './workspace.js';
-import { removeTaskToken } from './task-tokens.js';
+import { loadTaskReplyContext, removeTaskToken } from './task-tokens.js';
 import { reportTask } from './multica-api.js';
+import { createReplyGuard } from './reply-guard.js';
 
 export function parseTaskEndpoint(endpoint, { allowLegacy = false } = {}) {
   if (typeof endpoint !== 'string' || !endpoint || /[\s/\\\0]/.test(endpoint)) throw new Error('invalid task endpoint');
@@ -19,6 +20,18 @@ export async function reportFromCLI(config, endpoint, action, text, options = {}
   const { taskId, generation } = parseTaskEndpoint(endpoint, { allowLegacy: action !== 'reconcile' });
   if (!config.workspace_id) await ensureWorkspaceResolved(config, options);
   const state = createTaskState(config, options);
+  if (action === 'complete' && !options.guardHeld) {
+    const context = state.get(taskId) ?? (options.loadTaskReplyContext ?? loadTaskReplyContext)(taskId);
+    return createReplyGuard(config, options).run(taskId, generation, context, async guard => {
+      // Replays keep the payload that was checked before the first freeze.
+      if (!state.get(taskId)?.report) guard.assertComplete(text, options.contentAlreadyPosted === true);
+      if (!generation) {
+        if (state.get(taskId)) throw new Error('Bound task reporting requires task_id@generation');
+        guard.freezeLegacyCompletion();
+      }
+      return reportFromCLI(config, endpoint, action, text, { ...options, guardHeld: true });
+    });
+  }
   if (!generation) {
     if (state.get(taskId)) throw new Error('Bound task reporting requires task_id@generation');
     const result = await reportTask(config, action, taskId, text);

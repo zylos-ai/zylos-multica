@@ -27,7 +27,7 @@ function tokenPath(taskId, tokenDir) {
   return path.join(tokenDir, `${digest}.json`);
 }
 
-export function storeTaskToken(taskId, authToken, tokenDir = TASK_TOKEN_DIR) {
+export function storeTaskToken(taskId, authToken, tokenDir = TASK_TOKEN_DIR, context = {}) {
   const id = requireSecret(taskId, 'task id');
   const token = requireTaskToken(authToken);
   fs.mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
@@ -35,7 +35,8 @@ export function storeTaskToken(taskId, authToken, tokenDir = TASK_TOKEN_DIR) {
   const destination = tokenPath(id, tokenDir);
   const temporary = `${destination}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify({ task_id: id, auth_token: token })}\n`, {
+    const metadata = Object.fromEntries(['issue_id', 'chat_session_id'].filter(key => typeof context[key] === 'string').map(key => [key, context[key]]));
+    fs.writeFileSync(temporary, `${JSON.stringify({ task_id: id, auth_token: token, ...metadata })}\n`, {
       flag: 'wx',
       mode: 0o600,
     });
@@ -67,6 +68,14 @@ export function loadTaskToken(taskId, tokenDir = TASK_TOKEN_DIR) {
   } catch {
     throw new Error(`invalid active task token record for task ${id}`);
   }
+}
+
+export function loadTaskReplyContext(taskId, tokenDir = TASK_TOKEN_DIR) {
+  let value;
+  try { value = JSON.parse(fs.readFileSync(tokenPath(taskId, tokenDir), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return {}; throw new Error('cannot read task reply context'); }
+  if (value.task_id !== taskId) throw new Error('invalid task reply context');
+  return Object.fromEntries(['issue_id', 'chat_session_id'].filter(key => typeof value[key] === 'string').map(key => [key, value[key]]));
 }
 
 export function removeTaskToken(taskId, tokenDir = TASK_TOKEN_DIR) {

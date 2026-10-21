@@ -36,6 +36,7 @@ function harness(response = {}) {
     calls,
     output: () => output,
     dependencies: {
+      root: fs.mkdtempSync(path.join(os.tmpdir(), 'multica-cli-state-')),
       stdout,
       request: async (requestConfig, method, apiPath, body, options) => {
         authTokens.push(requestConfig.pat);
