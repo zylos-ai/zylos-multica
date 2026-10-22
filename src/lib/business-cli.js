@@ -5,6 +5,8 @@ import { downloadAttachment } from './attachments.js';
 import { multicaRequest } from './multica-api.js';
 import { loadTaskToken } from './task-tokens.js';
 import { ensureWorkspaceResolved } from './workspace.js';
+import { createTaskState } from './task-state.js';
+import { createReplyGuard } from './reply-guard.js';
 import { planExtendedCommand } from './business-commands.js';
 
 const ISSUE_SORTS = new Set(['position', 'title', 'created_at', 'start_date', 'due_date', 'priority']);
@@ -286,17 +288,28 @@ function planCommentAdd(flags, io, readTaskToken) {
   }
   // The token is read now so a missing/invalid record fails before any request.
   const taskToken = taskFlag !== undefined ? readTaskToken(requireText(taskFlag, '--task').trim()) : undefined;
-  return { output, body, taskToken };
+  return { output, body, taskToken, taskId: typeof taskFlag === 'string' ? taskFlag.trim() : undefined };
 }
 
-async function commentAdd(config, issueRef, plan, request) {
+async function commentAdd(config, issueRef, plan, request, dependencies) {
   // Issue lookup is a read; the PAT stays fine for it. Only the write changes actor.
   const issueId = (await resolveIssue(config, issueRef, request)).id;
   // Built after workspace resolution so the write carries the resolved
   // workspace_id alongside the task token.
   const authConfig = plan.taskToken !== undefined ? { ...config, pat: plan.taskToken } : config;
-  const result = await request(authConfig, 'POST', `/api/issues/${apiPath(issueId)}/comments`, plan.body, { workspaceHeader: true });
-  return { result, output: plan.output };
+  const post = () => request(authConfig, 'POST', `/api/issues/${apiPath(issueId)}/comments`, plan.body, { workspaceHeader: true });
+  if (!plan.taskId) return { result: await post(), output: plan.output };
+  const state = createTaskState(config, dependencies);
+  const record = state.get(plan.taskId);
+  return createReplyGuard(config, dependencies).run(plan.taskId, record?.generation, { issue_id: issueId }, async guard => {
+    const current = state.get(plan.taskId);
+    if (current?.report || current?.generation !== record?.generation) throw new Error('task has a frozen report or changed generation; comment rejected');
+    if (current && current.issue_id !== issueId) throw new Error('comment issue does not match the bound task');
+    guard.beforeComment();
+    const result = await post();
+    guard.commentSaved();
+    return { result, output: plan.output };
+  });
 }
 
 async function chatHistory(config, flags, request, readTaskToken) {
@@ -414,7 +427,7 @@ export async function runBusinessCLI(config, argv, dependencies = {}) {
   } else if (group === 'issue' && command === 'create' && subcommand === undefined) response = await issueCreate(config, flags, request, io);
   else if (group === 'issue' && command === 'get') response = await issueGet(config, [subcommand, ...rest].filter((value) => value !== undefined), flags, request);
   else if (group === 'issue' && command === 'list' && subcommand === undefined) response = await issueList(config, flags, request);
-  else if (isCommentAdd) response = await commentAdd(config, rest[0], commentPlan, request);
+  else if (isCommentAdd) response = await commentAdd(config, rest[0], commentPlan, request, dependencies);
   else if (group === 'issue' && command === 'comment' && subcommand === 'list') {
     if (rest.length !== 1) throw new Error('issue comment list requires exactly one issue key or UUID');
     response = await commentList(config, rest[0], flags, request);

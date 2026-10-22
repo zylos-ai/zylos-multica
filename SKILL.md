@@ -25,6 +25,7 @@ lifecycle:
     - execution/
     - task-state/
     - task-tokens/
+    - reply-guard/
     - task-downloads/
     - dispatch-preparations/
 
@@ -87,6 +88,22 @@ run is active. On comment-triggered runs, also pass `--parent <trigger-comment-i
 to reply in that thread. Post comments before completion or failure, because
 both remove the local task token. The follow-up card includes the scoped comment
 command; the CLI examples below show the general form.
+
+For issue tasks, final replies containing `mention://` are rejected: completion
+does not dispatch mentions. Post mentions using `issue comment add --task`
+(with `--parent` for a comment-triggered run), then inspect `trigger_outcomes`.
+Once this component observes a comment attempt in the same run, an ordinary
+final reply is also rejected because the server may omit it. Put the full
+result on the issue, stop work with `task.js quiesce ... --stopped`, then use
+`report.js complete-posted <task-id@generation> "<mention-free closing note>"`.
+This explicitly acknowledges that the issue already holds the result; it does
+not post another comment. If a comment response was lost, read back the issue
+before posting again. A saved comment does not prove a mentioned target ran.
+
+The comment guard covers this component's task-scoped comment writes, not
+comments posted through other clients or `--as-owner`. Known chat tasks keep
+their normal assistant reply behavior. Legacy task tokens without issue/chat
+metadata conservatively receive the issue mention check until a fresh claim.
 
 Use the supplemental reporter for progress, failure, or recovery of a pending result:
 

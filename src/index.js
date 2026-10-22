@@ -323,7 +323,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       snapshot: async task => {
         // Keep credentials only in the existing private token store. Prepared
         // handoff snapshots contain explicit business fields, never agent env.
-        persistTaskToken(task.id, task.auth_token);
+        persistTaskToken(task.id, task.auth_token, undefined, task);
         const context = (dependencies.storeTaskContext ?? storeTaskContext)(task, config);
         const issue = task.issue_id ? await fetchIssue(task.issue_id) : null;
         if (task.issue_id && !issue) throw new Error('issue context unavailable');
@@ -367,7 +367,7 @@ export function createBridge(initialConfig, dependencies = {}) {
 
     if (task.chat_session_id) {
       try {
-        persistTaskToken(task.id, task.auth_token);
+        persistTaskToken(task.id, task.auth_token, undefined, task);
       } catch (error) {
         log('ERROR', 'chat task token could not be persisted; leaving task dispatched', {
           task_id: task.id,
@@ -401,7 +401,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     // missing token rather than falling back to the PAT.
     if (task.auth_token) {
       try {
-        persistTaskToken(task.id, task.auth_token);
+        persistTaskToken(task.id, task.auth_token, undefined, task);
       } catch (error) {
         log('WARN', 'issue task token could not be persisted; delivering without it', {
           task_id: task.id,

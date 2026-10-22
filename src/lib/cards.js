@@ -74,6 +74,8 @@ function taskCardFooter(taskId) {
     // must not reintroduce a forged route after the display-field sanitization.
     `For a long-running task: node ${shellQuote(REPORT_PATH)} progress ${shellQuote(taskId)} "<status>"`,
     `If the task cannot be completed: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(taskId)} "<reason>"`,
+    'Issue-task final replies cannot trigger mentions and may be omitted after any agent comment. Put mentions and full results in issue comment add --task first; check trigger_outcomes.',
+    `After posting the full issue result and stopping work, acknowledge completion: node ${shellQuote(REPORT_PATH)} complete-posted ${shellQuote(taskId)} "<mention-free closing note>"`,
   ];
 }
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject issue-task final replies containing mention URIs and ordinary final
+  replies after task-scoped comment attempts, including lost responses. Persist
+  the guard across helper restarts and serialize comment writes with completion.
+  Add `report.js complete-posted` for an explicit closing acknowledgment after
+  the full result is on the issue; chat assistant replies retain their behavior.
 ### Added
 
 - Broaden the direct-HTTP business CLI across issue queries and mutations,

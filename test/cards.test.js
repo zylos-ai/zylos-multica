@@ -83,7 +83,7 @@ test('comment-triggered card labels agent authors and survives missing optional 
   assert.match(card, /Another agent left a NEW COMMENT/);
   assert.doesNotMatch(card, /earlier comment/);
   // No issue reference → no in-thread command can be rendered.
-  assert.doesNotMatch(card, /issue comment add/);
+  assert.doesNotMatch(card, /node [^\n]+ issue comment add/);
   assert.doesNotMatch(card, /other comment\(s\)/);
   assert.doesNotMatch(card, /Original issue description/);
 });
@@ -131,9 +131,11 @@ test('cards leave reply instructions to C4 without promising automatic forwardin
   }
   assert.match(cards[0], /This is a chat message\./);
   assert.match(cards[0], /report\.js' fail 'chat-route'/);
+  assert.doesNotMatch(cards[0], /complete-posted|Issue-task final replies/);
   for (const [index, taskId] of [[1, 'task-route'], [2, 'followup-route']]) {
     assert.match(cards[index], /If unfamiliar with task replies, see "Reply and task lifecycle" in ~\/zylos\/\.claude\/skills\/multica\/SKILL\.md; otherwise proceed/);
     assert.ok(cards[index].includes(`progress '${taskId}' "<status>"`));
     assert.ok(cards[index].includes(`fail '${taskId}' "<reason>"`));
+    assert.ok(cards[index].includes(`complete-posted '${taskId}' "<mention-free closing note>"`));
   }
 });
