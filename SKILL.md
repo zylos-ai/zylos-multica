@@ -188,24 +188,87 @@ the bridge starts the task, creates exactly one issue with origin and pre-upload
 attachment IDs, then completes the task. It never retries the non-idempotent
 issue create request.
 
-The first business CLI slice mirrors the official command grouping while using
-this component's protected local config (the PAT never appears in argv):
+The business CLI mirrors the scoped official business command groups and talks
+directly to the configured server. It does not install or invoke the official
+CLI. Authentication comes from protected component configuration; keep its PAT
+private, never pass it in argv, paste it into examples, or print configuration.
+A failed API request does not establish that an official CLI connection or
+installation is missing.
+
+Supported command families:
+
+| Group | Commands |
+| --- | --- |
+| `issue` | list, get, create, update, status, assign, reorder, children, pull-requests, runs, usage, search, run-messages, cancel-task, rerun, timeline/history |
+| `issue comment` | list, add, update, delete, resolve, unresolve |
+| `issue label` / `issue subscriber` | list, add, remove |
+| `issue metadata` | list, get, set, delete |
+| `issue property` | list, set, unset |
+| `issue wakeup` | list, get, runs (reads only) |
+| `project` / `project resource` | list, get, create, update, delete, status / list, add, update, remove |
+| `label` / `property` | list, get, create, update, delete / list, get, create, update, archive, unarchive |
+| `workspace` / `workspace member` | list, get, create, update / list, invite |
+| `agent` / `squad` | list, get, tasks, skills list / list, get, member list |
+| `chat` / `attachment` | history, thread / download, upload |
+
+Issue update/status/assign default to `suppress_run: true`: changing issue data
+does not opt into starting a run. `--no-start` makes that default explicit;
+`--start` opts into server execution and conflicts with `--no-start`. Reorder
+also suppresses execution and requires exactly one of `--before`, `--after`,
+`--top`, or `--bottom`; it reads the paginated status/project column before
+writing a position. Refresh and inspect after a concurrent column-change error.
+
+Every mutation is a single attempt. After a successful write, use the matching
+get/list command to verify current state. If a response is lost, inspect current
+state before deciding what to do; do not blindly retry creates, comments,
+uploads, reruns, or other writes. All run operations require a full run UUID;
+official CLI short run IDs are not supported here. Remaining differences and
+deferred commands are listed in [coverage](docs/business-cli-coverage.md).
+
+Examples (replace IDs with values from the current task or read results):
 
 ```bash
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue create --title "Title" --description "Body"
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue get MUL-123
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue list --output json
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue update MUL-123 --title "Revised title" --no-start
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue status MUL-123 in_progress
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue assign MUL-123 --to "Piper" --start
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue reorder MUL-123 --top
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue property set MUL-123 --name "Severity" --value "Major"
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue property list MUL-123 --output json
+node ~/zylos/.claude/skills/multica/scripts/multica.js issue wakeup list MUL-123
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment add MUL-123 --content "Update" --task <task-id>
 node ~/zylos/.claude/skills/multica/scripts/multica.js issue comment list MUL-123 --thread <comment-id> --tail 30
 node ~/zylos/.claude/skills/multica/scripts/multica.js chat history --task <task-id> --limit 20
+node ~/zylos/.claude/skills/multica/scripts/multica.js chat thread --task <task-id> --limit 20
+node ~/zylos/.claude/skills/multica/scripts/multica.js attachment upload ./result.png --task <task-id>
 node ~/zylos/.claude/skills/multica/scripts/multica.js attachment download <attachment-id> --task <task-id>
 node ~/zylos/.claude/skills/multica/scripts/multica.js attachment download <attachment-id> --task <task-id> --output-dir images --output json
 ```
 
-`chat history` works only while the referenced chat task is active. The bridge
+`chat history`, `chat thread`, and `attachment upload` work only while the
+referenced chat task is active. Run them before completing or failing it. The bridge
 stores its task-scoped token in a private mode-0600 file and removes it after a
 successful `complete` or `fail`; the component PAT is never used for chat
-history.
+history, thread reads, or uploads. Uploads use multipart form data, are limited
+to regular files of at most 100 MiB, and have a 60-second request timeout. Paths
+must resolve inside the current working directory unless the caller explicitly
+passes `--allow-external-file`; use only authorized task files. An upload is
+not a final reply or task completion.
+
+Issue properties support all 11 pinned types: text, multi_text, URL, multi_url,
+number, checkbox, date, select, multi_select, actor, and multi_actor. Lists return
+named rows beside stored values; option/member display names fall back to raw
+IDs when unavailable. Archived definitions cannot receive new values. Use a
+JSON array for multi_text/multi_url values containing commas. Member properties
+resolve members, not agents or squads; dates use `YYYY-MM-DD`.
+
+Wakeup create/update/disable/trigger/delete/checkin and event catalogs remain
+deferred: checkin affects completion semantics, and recurring-rule validation
+needs dedicated lifecycle tests. Agent/squad mutation and runtime-management
+commands are outside this CLI's scope. Local fixture validation does not verify
+live server writes or full official v0.6.2 parity.
 
 `issue comment add` requires an explicit actor. `--task <task-id>` (the id is on
 the task card) authenticates the write with that task's stored `mat_` token, the
@@ -248,5 +311,5 @@ A missing token/manifest, unlisted attachment, workspace mismatch, failed
 metadata/download request, invalid redirect, size overflow, or local write failure
 is an explicit failure; no partial output file is published and no download is
 retried automatically. This is directory isolation for normal use, not an OS
-sandbox against another process changing directories concurrently. Uploads and
-comment-attachment creation are outside this command's scope.
+sandbox against another process changing directories concurrently. Uploads use
+the separate command above; comment-attachment creation is outside this scope.
