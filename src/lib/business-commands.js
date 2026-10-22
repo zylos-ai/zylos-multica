@@ -238,7 +238,7 @@ export function planExtendedCommand(args, flags, h) {
         Object.assign(payload, { assignee_type: selected.type, assignee_id: selected.id });
       }
       const result = await api(config, request)('PUT', endpoint, payload);
-      if (duplicate && result?.duplicate_of_issue_id !== payload.duplicate_of_issue_id) throw new Error('write returned without the expected duplicate link; inspect issue before retrying');
+      if (duplicate && !Object.hasOwn(result ?? {}, 'duplicate_of')) throw new Error('write returned without the expected duplicate link; inspect issue before retrying');
       return result;
     });
   }

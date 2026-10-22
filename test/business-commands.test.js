@@ -163,6 +163,8 @@ const rejects = [
   ['issue', 'assign', 'MUL-1'], ['issue', 'assign', 'MUL-1', '--to-id', 'bad'],
   ['issue', 'assign', 'MUL-1', '--to', 'Piper', '--unassign'],
   ['issue', 'status', 'MUL-1', 'done', '--duplicate-of', 'MUL-2'],
+  ['issue', 'update', 'MUL-1', '--status', 'done', '--duplicate-of', 'MUL-2'],
+  ['issue', 'update', 'MUL-1', '--description', 'Conflict', '--duplicate-of', 'MUL-2'],
   ['project', 'create'], ['project', 'update', ids.project], ['project', 'status', ids.project, 'wrong'],
   ['label', 'create', '--name', 'A'], ['label', 'update', ids.label, '--color', 'red'],
   ['project', 'resource', 'add', ids.project], ['project', 'resource', 'update', ids.project, ids.resource],
@@ -182,6 +184,41 @@ for (const args of rejects) test(`reject before network: ${args.join(' ')}`, asy
   await assert.rejects(runBusinessCLI({ ...config, workspace_id: undefined, workspace_slug: 'workspace' }, args, h.dependencies));
   assert.equal(h.calls.length, 0);
 });
+
+for (const command of ['status', 'update']) {
+  for (const response of ['object', 'null', 'missing']) test(`duplicate response/readback: ${command} ${response}`, async () => {
+    const h = fixture(), original = h.dependencies.request;
+    const duplicateId = '10000000-0000-4000-8000-000000000002';
+    const link = { id: duplicateId, identifier: 'MUL-2', title: 'Original issue' };
+    h.dependencies.request = async (...args) => {
+      if (args[1] === 'GET' && args[2] === `/api/issues/${duplicateId}`) return { id: duplicateId };
+      const result = await original(...args);
+      if (args[1] === 'PUT') {
+        assert.equal(args[3].duplicate_of_issue_id, duplicateId);
+        // The response DTO exposes duplicate_of, never the raw request field.
+        delete h.state.issue.duplicate_of_issue_id;
+        if (response !== 'missing') h.state.issue.duplicate_of = response === 'null' ? null : link;
+        return structuredClone(h.state.issue);
+      }
+      return result;
+    };
+    const args = ['issue', command, 'MUL-1', ...(command === 'status' ? ['cancelled'] : ['--status', 'cancelled']), '--duplicate-of', duplicateId];
+    if (response === 'missing') await assert.rejects(h.run(args), /inspect issue before retrying/);
+    else {
+      const result = await h.run(args);
+      assert.deepEqual(result.duplicate_of, response === 'null' ? null : link);
+      assert.equal(Object.hasOwn(result, 'duplicate_of_issue_id'), false);
+    }
+    const readback = await h.run(['issue', 'get', 'MUL-1']);
+    assert.equal(readback.status, 'cancelled');
+    if (response !== 'missing') assert.deepEqual(readback.duplicate_of, response === 'null' ? null : link);
+    else assert.equal(Object.hasOwn(readback, 'duplicate_of'), false);
+    const writes = h.calls.filter((call) => call.method !== 'GET');
+    assert.equal(writes.length, 1, 'acknowledged write is never retried');
+    assert.equal(writes[0].method, 'PUT');
+    assert.equal(writes[0].body.duplicate_of_issue_id, duplicateId);
+  });
+}
 
 test('run suppression requires explicit opt-in for status/update/assign', async () => {
   for (const args of [['issue', 'status', 'MUL-1', 'done'], ['issue', 'update', 'MUL-1', '--title', 'X'], ['issue', 'assign', 'MUL-1', '--to', 'Piper']]) {
@@ -278,7 +315,7 @@ if (!process.env.MULTICA_MUTANT_CHILD) test('known-bad mutants: missing suppress
     assert.ok(text.includes(from), `${name} mutation anchor exists`); fs.writeFileSync(file, text.replace(from, to));
     const env = { ...process.env, MULTICA_MUTANT_CHILD: '1' };
     delete env.NODE_TEST_CONTEXT;
-    const result = spawnSync(process.execPath, ['--test', 'test/business-commands.test.js'], { cwd: root, env, encoding: 'utf8' });
+    const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'test/business-commands.test.js'], { cwd: root, env, encoding: 'utf8' });
     assert.notEqual(result.status, 0, `${name} must fail behavioral tests`);
     assert.match(result.stdout, /not ok/, `${name} failure must be a behavioral assertion`);
   }
