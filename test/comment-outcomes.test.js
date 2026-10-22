@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { runBusinessCLI } from '../src/lib/business-cli.js';
 
 async function addComment(receipt, output = 'table') {
   const calls = [];
   let text = '';
-  const result = await runBusinessCLI({ workspace_id: 'workspace', pat: 'owner' }, [
+  const result = await runBusinessCLI({ base_url: 'https://multica.example', workspace_id: 'workspace', pat: 'owner' }, [
     'issue', 'comment', 'add', 'MUL-1', '--task', 'task', '--parent', 'parent',
     '--content', 'Update', '--output', output,
   ], {
+    root: fs.mkdtempSync(path.join(os.tmpdir(), 'multica-comment-state-')),
     stdout: { write: (chunk) => { text += chunk; } },
     ensureWorkspaceResolved: async () => {},
     loadTaskToken: () => 'task-token',
