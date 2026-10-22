@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-22
+
 ### Fixed
 
 - Reject issue-task final replies containing mention URIs and ordinary final
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the guard across helper restarts and serialize comment writes with completion.
   Add `report.js complete-posted` for an explicit closing acknowledgment after
   the full result is on the issue; chat assistant replies retain their behavior.
+
 ### Added
 
 - Broaden the direct-HTTP business CLI across issue queries and mutations,
@@ -30,9 +33,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default issue update/status/assign to suppress execution; require `--start`
   to opt in. Reorder also suppresses execution. Preserve single-attempt writes,
   controlled file paths and protected configuration authentication.
-- Pin the business contract inventory to official v0.6.2 without changing the
-  component or advertised protocol version. Verification uses local fixtures;
-  live server writes and full official parity remain unverified.
+- Pin the business contract inventory to official v0.6.2 while keeping the
+  advertised protocol capability version unchanged.
+
+### Validation and scope
+
+- The merged functionality passes 345 regression tests and Linux/macOS CI.
+  Independent live acceptance on the merged main verified issue
+  update/status/assign writes and readback without starting runs by default,
+  both duplicate-of commands, C4 task delivery, final-reply rejection paths,
+  and comment-then-complete-posted reconciliation without duplicate comments.
+- Fresh private-chat validation, deferred wakeup mutations/events, and full
+  official CLI parity are outside this release's acceptance scope. The pinned
+  official source version does not raise the advertised protocol capability.
+
+### Upgrade notes
+
+- Stop active component/helper processes and agent work before upgrading,
+  following the existing upgrade procedure. Preserve configuration and task,
+  token, reply-guard, and reconciliation state.
+- Use `--start` explicitly when an issue update/status/assign should launch
+  execution. After posting the full issue result as a task-scoped comment,
+  close the run with `report.js complete-posted` instead of resending the body
+  through the ordinary final-reply route.
 
 ## [0.5.0] - 2026-10-16
 
