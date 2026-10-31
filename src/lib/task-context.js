@@ -31,21 +31,27 @@ function supportPath(value) {
   return name;
 }
 
-// Reject preexisting symlink components before creating our private snapshot.
-// Host filesystem access remains trusted; this is not a hostile-user sandbox.
-function privateRoot(root) {
-  const resolved = path.resolve(root);
-  let current = path.parse(resolved).root;
-  for (const segment of resolved.slice(current.length).split(path.sep).filter(Boolean)) {
-    current = path.join(current, segment);
+// Resolve host-owned ancestors, then reject symlinks in the component-owned
+// context root and task directory. This is not a hostile-user sandbox.
+function privateRoot(root, directory) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedDirectory = path.resolve(directory);
+  const relativeDirectory = path.relative(resolvedRoot, resolvedDirectory);
+  if (relativeDirectory === '..' || relativeDirectory.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeDirectory)) throw new TaskContextError('unsafe task context directory');
+  fs.mkdirSync(path.dirname(resolvedRoot), { recursive: true, mode: 0o700 });
+  const privateDirectory = path.join(fs.realpathSync(path.dirname(resolvedRoot)), path.basename(resolvedRoot));
+  let current = privateDirectory;
+  for (const segment of ['', ...relativeDirectory.split(path.sep).filter(Boolean)]) {
+    if (segment) current = path.join(current, segment);
     try { fs.mkdirSync(current, { mode: 0o700 }); } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
     const stat = fs.lstatSync(current);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new TaskContextError('unsafe task context directory');
   }
-  fs.chmodSync(resolved, 0o700);
-  return resolved;
+  fs.chmodSync(current, 0o700);
+  return resolvedDirectory;
 }
 
 export function storeTaskContext(task, identity, root = TASK_CONTEXT_DIR) {
@@ -115,7 +121,7 @@ export function storeTaskContext(task, identity, root = TASK_CONTEXT_DIR) {
   // Validate the entire payload before touching disk; generated paths carry no
   // external names except already-validated supporting file paths.
   const taskDirectory = path.join(root, digest(JSON.stringify([manifest.server_origin, manifest.workspace_id, task.id])));
-  const directory = fs.mkdtempSync(path.join(privateRoot(taskDirectory), 'context-'));
+  const directory = fs.mkdtempSync(path.join(privateRoot(root, taskDirectory), 'context-'));
   for (const [name, content] of files) {
     const destination = path.join(directory, name);
     fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
