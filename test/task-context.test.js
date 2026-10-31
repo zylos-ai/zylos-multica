@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,16 @@ import { buildChatCard, buildTaskCard } from '../src/lib/cards.js';
 import { createBridge } from '../src/index.js';
 
 const identity = { base_url: 'https://multica.example', workspace_id: 'workspace-a' };
-const root = () => fs.mkdtempSync(path.join(os.tmpdir(), 'multica-context-test-'));
+const temporaryDirectories = new Set();
+const root = () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-context-test-'));
+  temporaryDirectories.add(directory);
+  return directory;
+};
+test.afterEach(() => {
+  for (const directory of temporaryDirectories) fs.rmSync(directory, { recursive: true, force: true });
+  temporaryDirectories.clear();
+});
 const fixture = (id = 'task-a') => ({
   id, agent_id: 'agent-a', issue_id: 'issue-a', auth_token: 'mat_SECRET',
   workspace_context: 'Workspace instructions', project_id: 'project-a', project_title: 'Project',
@@ -67,11 +77,33 @@ test('duplicate primary skill content follows upstream precedence, including nor
   assert.equal(JSON.parse(read(result, 'manifest.json')).skills[0].files.length, 1);
 });
 
-test('symlink root, checksum mismatch, limits and unresolved refs fail explicitly', () => {
+test('context storage allows a symlink above its private root', () => {
+  const directory = root();
+  const realParent = path.join(directory, 'real-parent');
+  fs.mkdirSync(realParent);
+  fs.symlinkSync(realParent, path.join(directory, 'linked-parent'));
+  const result = storeTaskContext(fixture(), identity, path.join(directory, 'linked-parent', 'tasks'));
+  assert.ok(result.index.startsWith(`${directory}${path.sep}linked-parent${path.sep}tasks${path.sep}`));
+  assert.ok(fs.realpathSync(result.index).startsWith(`${fs.realpathSync(realParent)}${path.sep}tasks${path.sep}`));
+});
+
+test('context storage rejects symlinks at its private root and task directory', () => {
   const directory = root(); const outside = root();
-  fs.symlinkSync(outside, path.join(directory, 'link'));
-  assert.throws(() => storeTaskContext(fixture(), identity, path.join(directory, 'link', 'child')), /unsafe/);
+  const contextRoot = path.join(directory, 'tasks');
+  fs.symlinkSync(outside, contextRoot);
+  assert.throws(() => storeTaskContext(fixture(), identity, contextRoot), /unsafe/);
   assert.deepEqual(fs.readdirSync(outside), []);
+
+  const privateRoot = path.join(directory, 'private-tasks');
+  fs.mkdirSync(privateRoot);
+  const taskDirectory = createHash('sha256')
+    .update(JSON.stringify([new URL(identity.base_url).origin, identity.workspace_id, fixture().id])).digest('hex');
+  fs.symlinkSync(outside, path.join(privateRoot, taskDirectory));
+  assert.throws(() => storeTaskContext(fixture(), identity, privateRoot), /unsafe/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+test('checksum mismatch, limits and unresolved refs fail explicitly', () => {
   const checksum = fixture(); checksum.agent.skills[0].files[0].sha256 = 'bad';
   assert.throws(() => storeTaskContext(checksum, identity, root()), /checksum/);
   const oversized = fixture(); oversized.agent.instructions = 'x'.repeat(10 * 1024 * 1024);
