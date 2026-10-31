@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-31
+
+### Fixed
+
+- Store task context when an ancestor of the task context root is a symbolic
+  link (for example a workspace directory linked to a data volume). Only the
+  component-owned task root and the directories below it must be real,
+  non-symlink directories; previously every such task failed preparation with
+  `environment_prepare_failed` (#52).
+
 ## [0.6.0] - 2026-10-22
 
 ### Fixed
