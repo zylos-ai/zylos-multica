@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createTaskState } from '../src/lib/task-state.js';
-import { createTaskDispatcher, HANDOFF_FAILURE_MIN_ATTEMPTS, HANDOFF_FAILURE_MIN_MS } from '../src/lib/task-dispatch.js';
+import { createTaskDispatcher, HANDOFF_FAILURE_MIN_ATTEMPTS, HANDOFF_FAILURE_MIN_MS, isExplicitRejection } from '../src/lib/task-dispatch.js';
 
 const PAT = 'mul_component_pat_SECRET_1234';
 const CLAIM = 'mat_claim_token_SECRET_5678';
@@ -36,7 +36,7 @@ function fixture(overrides = {}) {
     state, request, root: path.join(root, 'dispatch'), now,
     log: (level, message, extra) => logs.push({ level, message, extra }),
     taskSecret: () => CLAIM_RAW,
-    snapshot: async value => ({ task: { id: value.id }, context: { index: '/fixture/context' } }),
+    snapshot: async value => { if (overrides.snapshot) return overrides.snapshot(); return { task: { id: value.id }, context: { index: '/fixture/context' } }; },
     render: async () => { events.push('render'); return overrides.render ? overrides.render() : 'fixed card'; },
     deliver: async () => { events.push('deliver'); return overrides.deliver ? overrides.deliver() : true; },
   };
@@ -201,23 +201,141 @@ test('start never confirmed: bounded start failure stops locally with one ERROR 
   await assert.rejects(f.state.markAccepted(task.id, record.generation), /task start is not confirmed|quiesced/);
 });
 
-test('terminal path that itself fails stops locally and records both reasons', async t => {
-  let starts = 0;
-  // Card frozen and start confirmed once; then the platform stops accepting the claim.
-  const f = fixture({
-    deliver: () => false,
-    request: kind => { if (kind === 'start' && ++starts > 1) throw Object.assign(Error('HTTP 409'), { status: 409 }); },
-  });
+const httpError = status => Object.assign(Error(`POST /start -> HTTP ${status}`), { status });
+
+test('only an explicit rejection counts as refused', () => {
+  for (const status of [400, 401, 403, 404, 409, 410, 422]) assert.equal(isExplicitRejection(httpError(status)), true, String(status));
+  for (const status of [408, 429, 500, 502, 503, 504]) assert.equal(isExplicitRejection(httpError(status)), false, String(status));
+  assert.equal(isExplicitRejection(Object.assign(Error('start response did not confirm original claim'), { code: 'START_NOT_CONFIRMED' })), true);
+  for (const error of [Error('fetch failed'), Object.assign(Error('aborted'), { name: 'TimeoutError' }), Object.assign(Error('x'), { code: 'ECONNRESET' }), undefined]) {
+    assert.equal(isExplicitRejection(error), false);
+  }
+});
+
+test('start answered for another state stops locally like a rejection', async t => {
+  const f = fixture({ request: kind => (kind === 'start' ? { ...task, status: 'cancelled' } : undefined) });
   t.after(f.cleanup);
-  f.state.report = async () => { throw Error(`report lock failed ${CLAIM}`); };
   const d = f.make(); await d.enqueue(task); await d.drain();
   f.advance(300_000); await f.tick(d);
   f.advance(300_000); await f.tick(d);
-  const error = f.logs.find(l => l.level === 'ERROR');
+  const errors = f.logs.filter(l => l.level === 'ERROR');
+  assert.deepEqual(errors.map(l => [l.extra.stage, l.extra.code, l.extra.outcome]), [['start', 'START_NOT_CONFIRMED', 'stopped_locally']]);
+  assert.equal(f.calls.some(c => !c.route.endsWith('/start')), false);
+});
+
+test('a transient start failure past the bound keeps retrying and the card is delivered once start recovers', async t => {
+  let failing = true;
+  const f = fixture({ request: kind => { if (kind === 'start' && failing) throw httpError(503); } });
+  t.after(f.cleanup);
+  const d = f.make(); await d.enqueue(task); await d.drain();
+  for (let i = 0; i < 3; i++) { f.advance(300_000); await f.tick(d); } // 15 minutes, 4 attempts
+  assert.equal(f.entry().handoff_failure.attempts, 4);
+  assert.equal(f.entry().handoff_failure.terminal, undefined);
+  assert.equal(f.state.get(task.id).execution.quiesced, false);
+  failing = false;
+  f.advance(300_000); await f.tick(d);
+  const record = f.state.get(task.id);
+  assert.equal(record.delivery.delivered, true);
+  assert.equal(record.report, null);
+  assert.equal(f.count('deliver'), 1);
+  assert.equal(f.entry().handoff_failure, undefined);
+  assert.deepEqual(f.logs.map(l => [l.level, l.extra.stage, l.extra.code]), [['WARN', 'start', 'HTTP_503']]);
+});
+
+test('a transient failure of the terminal path keeps retrying; a rejection there stops locally', async t => {
+  // Card frozen and start confirmed; the fail report itself fails with a plain (transient) error.
+  const transient = fixture({ deliver: () => false }); t.after(transient.cleanup);
+  let reportFailures = 0;
+  const report = transient.state.report.bind(transient.state);
+  transient.state.report = async (...args) => {
+    if (reportFailures < 3) { reportFailures += 1; throw Error(`report lock failed ${CLAIM}`); }
+    return report(...args);
+  };
+  let d = transient.make(); await d.enqueue(task); await d.drain();
+  transient.advance(300_000); await transient.tick(d);
+  transient.advance(300_000); await transient.tick(d); // bound: quiesced, report throws
+  assert.equal(transient.state.get(task.id).execution.quiesced, true);
+  assert.equal(transient.entry().handoff_failure.fail_reason, 'task handoff failed at deliver: C4_DELIVERY_UNCONFIRMED (3 attempts)');
+  assert.equal(transient.logs.filter(l => l.level === 'ERROR').length, 0);
+  transient.advance(300_000); await transient.tick(d); // step and bound both retry the report: 2 more failures
+  assert.equal(reportFailures, 3);
+  assert.equal(transient.entry().handoff_failure.terminal, undefined);
+  d = transient.make(); transient.advance(300_000); await transient.tick(d); // after a restart the report gets through
+  assert.deepEqual(transient.calls.filter(c => c.route.endsWith('/fail')).map(c => c.body),
+    [{ error: 'task handoff failed at deliver: C4_DELIVERY_UNCONFIRMED (3 attempts)', failure_reason: 'environment_prepare_failed' }]);
+  assert.equal(transient.state.get(task.id).report.state, 'confirmed');
+  const errors = transient.logs.filter(l => l.level === 'ERROR');
+  assert.deepEqual(errors.map(l => [l.message, l.extra.outcome]), [['task handoff failed permanently', 'reported_fail']]);
+  assert.equal(transient.entry().handoff_failure, undefined);
+  const deliveries = transient.count('deliver');
+  for (let i = 0; i < 3; i++) { transient.advance(600_000); await transient.tick(d); }
+  assert.equal(transient.count('deliver'), deliveries);
+  assert.deepEqual(secretsIn(JSON.stringify(transient.logs)), []);
+  // No frozen card: the bound starts the prestart abandonment, whose start Multica refuses.
+  let renders = 0;
+  const rejected = fixture({
+    render: () => { renders += 1; throw Error('template broke'); },
+    request: kind => { if (kind === 'start') throw httpError(409); },
+  });
+  t.after(rejected.cleanup);
+  d = rejected.make(); await d.enqueue(task); await d.drain();
+  rejected.advance(300_000); await rejected.tick(d);
+  rejected.advance(300_000); await rejected.tick(d);
+  const error = rejected.logs.find(l => l.level === 'ERROR');
   assert.equal(error.extra.outcome, 'stopped_locally');
-  assert.equal(error.extra.terminal_error.error, 'report lock failed mat_[REDACTED]');
+  assert.equal(error.extra.terminal_error.code, 'HTTP_409');
+  const record = rejected.state.get(task.id);
+  assert.equal(record.preparation_failure.reason, 'task handoff failed at render: ERROR (3 attempts)');
+  assert.equal(record.report, null);
+  assert.equal(rejected.entry().handoff_failure.terminal, true);
+  const starts = rejected.count('start');
+  for (let i = 0; i < 3; i++) { rejected.advance(600_000); await rejected.tick(d); }
+  assert.equal(rejected.count('start'), starts);
+  assert.equal(renders, 3);
+});
+
+// The #42 prestart termination (here from a context snapshot failure) retries
+// its claim-confirming start on every tick, so it reaches the same bound.
+const snapshotFailure = { snapshot: () => { throw Error('issue context unavailable'); } };
+const SNAPSHOT_REASON = 'preparation failed: task context materialization failed; inspect retained task context';
+
+test('prestart termination refused at the bound stops locally, keeps its frozen reason, and never starts again', async t => {
+  const f = fixture({ ...snapshotFailure, request: kind => { if (kind === 'start') throw httpError(409); } });
+  t.after(f.cleanup);
+  let d = f.make(); await d.enqueue(task); await d.drain();
+  f.advance(300_000); await f.tick(d);
+  assert.equal(f.logs.filter(l => l.level === 'ERROR').length, 0);
+  f.advance(300_000); await f.tick(d);
+  const record = f.state.get(task.id);
+  assert.equal(record.preparation_failure.reason, SNAPSHOT_REASON);
+  assert.equal(record.report, null);
+  assert.equal(f.calls.some(c => !c.route.endsWith('/start')), false);
+  const errors = f.logs.filter(l => l.level === 'ERROR');
+  assert.deepEqual(errors.map(l => [l.extra.stage, l.extra.code, l.extra.outcome, l.extra.terminal_error]), [['abandon', 'HTTP_409', 'stopped_locally', undefined]]);
   assert.equal(f.entry().handoff_failure.terminal, true);
-  assert.equal(f.state.get(task.id).execution.quiesced, true);
+  const starts = f.count('start');
+  assert.equal(starts, 3);
+  for (let i = 0; i < 5; i++) { f.advance(600_000); await f.tick(d); }
+  d = f.make(); await f.tick(d); // restart
+  await f.tick(d);
+  assert.equal(f.count('start'), starts, 'no /start after the local stop, also after a restart');
+  assert.equal(f.entry().handoff_failure.terminal, true);
+  assert.equal(f.logs.length, 1 + errors.length + 1, 'snapshot WARN, deferred WARN, one ERROR');
+});
+
+test('prestart termination with a transient start failure keeps retrying and reports its frozen reason once start recovers', async t => {
+  let failing = true;
+  const f = fixture({ ...snapshotFailure, request: kind => { if (kind === 'start' && failing) throw httpError(503); } });
+  t.after(f.cleanup);
+  const d = f.make(); await d.enqueue(task); await d.drain();
+  for (let i = 0; i < 3; i++) { f.advance(300_000); await f.tick(d); }
+  assert.equal(f.entry().handoff_failure.terminal, undefined);
+  assert.equal(f.logs.filter(l => l.level === 'ERROR').length, 0);
+  failing = false;
+  f.advance(300_000); await f.tick(d);
+  assert.deepEqual(f.calls.filter(c => c.route.endsWith('/fail')).map(c => c.body), [{ error: SNAPSHOT_REASON, failure_reason: 'environment_prepare_failed' }]);
+  assert.equal(f.state.get(task.id).report.state, 'confirmed');
+  assert.equal(f.entry().handoff_failure, undefined);
 });
 
 test('a task admitted by the agent is never failed by the bound', async t => {

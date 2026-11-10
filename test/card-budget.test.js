@@ -45,7 +45,7 @@ test('mostly-Chinese huge trigger comment is truncated on a character boundary w
   const match = card.match(/\n\[Truncated to fit the session handoff: showing (\d+) of (\d+) bytes\. Full text: (.+)\]\n/);
   assert.ok(match, 'truncation note present');
   assert.equal(Number(match[2]), bytes(comment));
-  assert.match(match[3], /multica\.js' issue comment list 'ZYLO-1' --thread 'c-1' --output json$/);
+  assert.match(match[3], /multica\.js' issue comment list 'ZYLO-1' --thread 'c-1' --full --output json$/);
   const quoted = card.split('\n').filter(line => line.startsWith('> ')).map(line => line.slice(2));
   assert.ok(comment.startsWith(quoted[0]), 'kept text is an exact prefix of the comment');
   assert.equal(bytes(quoted[0]), Number(match[1]));
@@ -70,7 +70,7 @@ test('largest field is truncated first; small ones are kept', () => {
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assert.match(card, /\n> please check\n/);
   assert.match(card, new RegExp(`> ${'d'.repeat(20_000)}\n`), 'description kept whole');
-  assert.match(card, /showing \d+ of 150000 bytes\. Full text: [^\n]*issue comment list 'ZYLO-1' --thread 'c-0' --output json\]/);
+  assert.match(card, /showing \d+ of 150000 bytes\. Full text: [^\n]*issue comment list 'ZYLO-1' --thread 'c-0' --full --output json\]/);
   assert.equal((card.match(/Truncated/g) || []).length, 1);
 });
 
@@ -79,7 +79,7 @@ test('several oversize fields are each truncated with their own pointer', () => 
   const card = buildTaskCard(task, { ...issue, description: '述'.repeat(60_000) });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assertCleanUtf8(card);
-  assert.match(card, /of 180000 bytes\. Full text: [^\n]*--thread 'c-4' --output json\]/);
+  assert.match(card, /of 180000 bytes\. Full text: [^\n]*--thread 'c-4' --full --output json\]/);
   assert.match(card, /of 180000 bytes\. Full text: [^\n]*issue get 'ZYLO-1' --output json\]/);
 });
 
@@ -105,4 +105,33 @@ test('truncation note sits outside the quoted external text and is not forgeable
   const notes = card.split('\n').filter(line => line.startsWith('[Truncated to fit'));
   assert.equal(notes.length, 1);
   assert.match(card, /\n> \[Truncated fake\]\n/);
+});
+
+test('many coalesced comments keep the earliest that fit and summarize the rest in one line', () => {
+  for (const [count, size] of [[250, 600], [300, 500], [500, 300]]) {
+    const coalesced = Array.from({ length: count }, (_, i) => ({
+      id: `c-${i}`, author_name: 'member', created_at: '2026-11-10T00:00:00Z', content: `#${i}# ${'评'.repeat(Math.floor(size / 3) - 4)}`,
+    }));
+    const task = { id: 'task-7', issue_id: 'issue-1', trigger_comment_id: 'c-t', trigger_comment_content: 'see above', coalesced_comments: coalesced };
+    const card = buildTaskCard(task, issue);
+    assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${count}x${size}: ${bytes(card)} bytes`);
+    assertCleanUtf8(card);
+    const shownIds = [...card.matchAll(/^> #(\d+)# /gm)].map(m => Number(m[1]));
+    assert.ok(shownIds.length > 0 && shownIds.length < count, `${count}x${size}: ${shownIds.length} shown`);
+    assert.ok(shownIds.every((id, i) => id === i), 'earliest comments, in server order');
+    const omitted = card.match(/\n\[(\d+) more earlier comment\(s\) omitted to fit the session handoff\. Full text: ([^\n]*)\]\n/);
+    assert.ok(omitted, 'one summary line');
+    assert.equal(Number(omitted[1]), count - shownIds.length);
+    assert.match(omitted[2], /multica\.js' issue comment list 'ZYLO-1' --full --output json$/);
+    assert.ok((card.match(/\[Truncated to fit/g) || []).length <= 1, 'at most the crossing comment is cut');
+    assert.match(card, /This run also covers \d+ earlier comment\(s\)/);
+    assert.match(card, /\n> see above\n/);
+  }
+});
+
+test('thousands of empty coalesced comments still fit', () => {
+  const coalesced = Array.from({ length: 4000 }, (_, i) => ({ id: `e-${i}`, author_name: 'member', content: '' }));
+  const card = buildTaskCard({ id: 'task-8', issue_id: 'issue-1', trigger_comment_id: 'c', trigger_comment_content: 'x', coalesced_comments: coalesced }, issue);
+  assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${bytes(card)} bytes`);
+  assert.match(card, /\[\d+ more earlier comment\(s\) omitted/);
 });

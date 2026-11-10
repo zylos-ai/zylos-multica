@@ -18,7 +18,9 @@ const MULTICA_CLI_PATH = path.join(os.homedir(), 'zylos/.claude/skills/multica/s
 
 // C4 receives the card as ONE argv value; Linux rejects a single argument of
 // 131072 bytes or more (MAX_ARG_STRLEN) with a synchronous spawn E2BIG. The
-// budget is in UTF-8 bytes and leaves room for the other arguments.
+// limit applies to each argument on its own. The margin below it covers a
+// scheduled card, which the scheduler forwards to C4 as one argument wrapped
+// in its own "[Scheduled Task: …]" prefix and completion suffix.
 export const CARD_BYTE_BUDGET = 96 * 1024;
 
 /** Longest prefix of `text` within `maxBytes` UTF-8 bytes; never splits a character. */
@@ -30,21 +32,29 @@ export function truncateUtf8(text, maxBytes) {
   return bytes.subarray(0, end).toString('utf8');
 }
 
+function truncationNote(keptBytes, total, pointer) {
+  return `[Truncated to fit the session handoff: showing ${keptBytes} of ${total} bytes. Full text: ${pointer || 'not available from this card; ask the requester'}]`;
+}
+
 /**
  * Builds a card whose external free-text fields are truncated, largest first,
- * until the whole card fits the byte budget. `build(clip)` calls
- * clip(key, text, pointer) per field and receives { text, note }, where note is
- * an instruction line (outside the quoted external text) pointing at a command
- * that reads the full text. Other fields are short server metadata and are
- * never truncated; an oversize card still fails delivery and hits the
- * dispatcher's bounded retry instead of looping.
+ * until the whole card fits the byte budget. `build({ clip, clipList })`:
+ * - clip(key, text, pointer) -> { text, note } for one field;
+ * - clipList(key, items, omittedPointer) -> { items: [{ index, text, note }], omittedNote }
+ *   for a list counted as ONE field: the earliest items that fit are kept in
+ *   order, the item crossing the limit is cut, the rest become one omitted line.
+ * A note is an instruction line outside the quoted external text that names a
+ * command reading the full text. Each round lowers the limit of the largest
+ * shown field by the excess, so a field's shown size strictly decreases until
+ * the card fits or nothing truncatable is left; no round cap is needed. Other
+ * fields are short server metadata and are never truncated; an oversize card
+ * still fails delivery and hits the dispatcher's bounded retry.
  */
 function fitCard(build, budget = CARD_BYTE_BUDGET) {
   const limits = new Map();
-  let card;
-  for (let round = 0; round < 64; round += 1) {
+  for (;;) {
     const shown = new Map();
-    card = build((key, text, pointer) => {
+    const clip = (key, text, pointer) => {
       const total = Buffer.byteLength(text);
       const limit = limits.get(key);
       if (limit === undefined || total <= limit) {
@@ -54,11 +64,37 @@ function fitCard(build, budget = CARD_BYTE_BUDGET) {
       const kept = truncateUtf8(text, limit);
       const keptBytes = Buffer.byteLength(kept);
       shown.set(key, keptBytes);
+      return { text: kept, note: truncationNote(keptBytes, total, pointer) };
+    };
+    const clipList = (key, items, omittedPointer) => {
+      let remaining = limits.get(key) ?? Infinity;
+      let used = 0;
+      const kept = [];
+      // Each item costs one byte more than its text, so even empty comments
+      // (whose header lines still take space) can be omitted.
+      for (const [index, item] of items.entries()) {
+        const total = Buffer.byteLength(item.text);
+        if (total + 1 <= remaining) {
+          kept.push({ index, text: item.text, note: '' });
+          remaining -= total + 1; used += total + 1;
+          continue;
+        }
+        const text = truncateUtf8(item.text, remaining - 1);
+        if (text) {
+          const keptBytes = Buffer.byteLength(text);
+          kept.push({ index, text, note: truncationNote(keptBytes, total, item.pointer) });
+          used += keptBytes + 1;
+        }
+        break;
+      }
+      shown.set(key, used);
+      const omitted = items.length - kept.length;
       return {
-        text: kept,
-        note: `[Truncated to fit the session handoff: showing ${keptBytes} of ${total} bytes. Full text: ${pointer || 'not available from this card; ask the requester'}]`,
+        items: kept,
+        omittedNote: omitted ? `[${omitted} more earlier comment(s) omitted to fit the session handoff. Full text: ${omittedPointer || 'not available from this card; ask the requester'}]` : '',
       };
-    });
+    };
+    const card = build({ clip, clipList });
     const excess = Buffer.byteLength(card) - budget;
     if (excess <= 0) return card;
     let target;
@@ -66,7 +102,6 @@ function fitCard(build, budget = CARD_BYTE_BUDGET) {
     if (!target) return card;
     limits.set(target.key, Math.max(0, target.bytes - excess));
   }
-  return card;
 }
 
 function cliCommand(...args) {
@@ -141,7 +176,7 @@ function taskCardFooter(taskId) {
 // carries the triggering comment (and any earlier comments coalesced into
 // this run); the card must lead with THAT, not with the issue text, or the
 // agent answers the original request again (zylos-multica #21).
-function buildFollowUpCard(task, issue, context, clip) {
+function buildFollowUpCard(task, issue, context, { clip, clipList }) {
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
@@ -149,7 +184,8 @@ function buildFollowUpCard(task, issue, context, clip) {
   const author = authorLabel(task.trigger_author_type, task.trigger_author_name);
   const triggerCommentId = sanitizeExternalText(task.trigger_comment_id).trim();
   const threadPointer = (id) => (issueRef
-    ? cliCommand('issue comment list', shellQuote(issueRef), ...(id ? ['--thread', shellQuote(id)] : []), '--output json')
+    // --full: a resolved thread would otherwise be folded and hide its comments.
+    ? cliCommand('issue comment list', shellQuote(issueRef), ...(id ? ['--thread', shellQuote(id)] : []), '--full --output json')
     : '');
   const comment = clip('trigger_comment', sanitizeExternalText(task.trigger_comment_content).trim(), threadPointer(triggerCommentId));
   const lines = [
@@ -173,13 +209,18 @@ function buildFollowUpCard(task, issue, context, clip) {
   const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
   if (coalesced.length) {
     lines.push('', `This run also covers ${coalesced.length} earlier comment(s) posted before it started — address them too:`);
-    coalesced.forEach((item, index) => {
+    // Kept in the server's order: the earliest comments that fit stay.
+    const shown = clipList('coalesced_comments', coalesced.map((item) => ({
+      text: sanitizeExternalText(item?.content).trim(),
+      pointer: threadPointer(sanitizeExternalText(item?.id).trim()),
+    })), threadPointer(''));
+    for (const { index, text, note } of shown.items) {
+      const item = coalesced[index];
       const who = authorLabel(item?.author_type, item?.author_name);
       const when = sanitizeExternalText(item?.created_at).trim();
-      const body = clip(`coalesced_comment:${index}`, sanitizeExternalText(item?.content).trim(),
-        threadPointer(sanitizeExternalText(item?.id).trim()));
-      lines.push(`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(body.text || '(empty comment)'), ...(body.note ? [body.note] : []));
-    });
+      lines.push(`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(text || '(empty comment)'), ...(note ? [note] : []));
+    }
+    if (shown.omittedNote) lines.push(shown.omittedNote);
   }
   const newCount = Number(task.new_comment_count) || 0;
   if (newCount > 0 && issueRef) {
@@ -198,11 +239,11 @@ function buildFollowUpCard(task, issue, context, clip) {
 }
 
 export function buildTaskCard(task, issue, context, { budget = CARD_BYTE_BUDGET } = {}) {
-  if (task?.trigger_comment_id || task?.trigger_comment_content) return fitCard((clip) => buildFollowUpCard(task, issue, context, clip), budget);
-  return fitCard((clip) => buildNewTaskCard(task, issue, context, clip), budget);
+  if (task?.trigger_comment_id || task?.trigger_comment_content) return fitCard((clips) => buildFollowUpCard(task, issue, context, clips), budget);
+  return fitCard((clips) => buildNewTaskCard(task, issue, context, clips), budget);
 }
 
-function buildNewTaskCard(task, issue, context, clip) {
+function buildNewTaskCard(task, issue, context, { clip }) {
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
@@ -228,10 +269,10 @@ function buildNewTaskCard(task, issue, context, clip) {
 }
 
 export function buildChatCard(task, context, { budget = CARD_BYTE_BUDGET } = {}) {
-  return fitCard((clip) => buildChatCardLines(task, context, clip), budget);
+  return fitCard((clips) => buildChatCardLines(task, context, clips), budget);
 }
 
-function buildChatCardLines(task, context, clip) {
+function buildChatCardLines(task, context, { clip }) {
   const message = clip('chat_message', sanitizeExternalText(task.chat_message || '(empty message)'),
     cliCommand('chat history', '--task', shellQuote(sanitizeExternalText(task.id)), '--output json'));
   const lines = [

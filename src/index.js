@@ -16,7 +16,7 @@ import { multicaRequest } from './lib/multica-api.js';
 import { ensureWorkspaceResolved } from './lib/workspace.js';
 import { storeTaskContext, TaskContextError } from './lib/task-context.js';
 import { loadTaskToken, storeTaskToken } from './lib/task-tokens.js';
-import { describeError, errorCode } from './lib/log-redact.js';
+import { describeError, errorCode, redactSecrets } from './lib/log-redact.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 import { createWakeupChannel } from './lib/wakeup.js';
 
@@ -33,11 +33,11 @@ const log = (level, message, extra) => {
   console.log(`${new Date().toISOString()} ${level} [multica] ${message}${suffix}`);
 };
 
-export function runNodeScript(script, args, timeout = 20_000, spawnFile = execFile) {
+export function runNodeScript(script, args, timeout = 20_000) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnFile('node', [script, ...args], { timeout }, (error, stdout, stderr) => {
+      child = execFile('node', [script, ...args], { timeout }, (error, stdout, stderr) => {
         resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr), error });
       });
     } catch (error) {
@@ -151,17 +151,28 @@ export function createBridge(initialConfig, dependencies = {}) {
     log('INFO', 'registered', { runtime_id: runtimeId, ...(serverVersion ? { server_version: serverVersion } : {}) });
   }
 
+  // c4-receive --json reports failures as {"ok":false,"error":{code,message}}
+  // on stdout with an empty stderr. Never log result.error.cmd or the child
+  // error's message verbatim: both carry the card argv.
+  function c4Failure(result) {
+    let reported;
+    try { reported = JSON.parse(String(result.stdout).trim().split('\n').at(-1))?.error; } catch { reported = undefined; }
+    if (reported && typeof reported.code === 'string' && reported.code) {
+      return { code: reported.code.slice(0, 64), error: redactSecrets(String(reported.message ?? ''), [config.pat]).slice(0, 200) };
+    }
+    return {
+      code: errorCode(result.error),
+      error: result.stderr ? redactSecrets(result.stderr, [config.pat]).slice(0, 200) : describeError(result.error, [config.pat]).error,
+    };
+  }
+
   async function deliverToC4Result(content, endpoint) {
     const result = await runScript(C4_RECEIVE, [
       '--channel', 'multica', '--endpoint', String(endpoint), '--json', '--content', content,
     ]);
     if (!result.ok) {
-      // Never log result.error.cmd or its message verbatim: both carry the card argv.
-      log('ERROR', 'c4 delivery failed', {
-        endpoint: String(endpoint),
-        code: errorCode(result.error),
-        error: result.stderr ? result.stderr.slice(0, 200) : describeError(result.error, [config.pat]).error,
-      });
+      result.failure = c4Failure(result);
+      log('ERROR', 'c4 delivery failed', { endpoint: String(endpoint), ...result.failure });
     }
     return result;
   }
@@ -360,7 +371,9 @@ export function createBridge(initialConfig, dependencies = {}) {
           if (await scheduleDelivery(delivery.content, { ...task, reply_endpoint: delivery.endpoint }, new Date(delivery.dueAt))) return true;
         }
         const result = await deliverToC4Result(delivery.content, delivery.endpoint);
-        if (!result.ok) throw Object.assign(new Error('C4 delivery failed'), { code: errorCode(result.error) });
+        if (!result.ok) {
+          throw Object.assign(new Error(`C4 delivery failed${result.failure.error ? `: ${result.failure.error}` : ''}`), { code: result.failure.code });
+        }
         return true;
       },
     });

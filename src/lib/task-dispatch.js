@@ -16,6 +16,15 @@ export const HANDOFF_FAILURE_MIN_MS = 10 * 60_000;
 
 function coded(message, code) { return Object.assign(new Error(message), { code }); }
 
+// Multica refused the claim (4xx) or answered /start for a different claim. A
+// 5xx, network error or timeout may clear up, and 408/429 ask for a retry, so
+// those keep retrying; the WARN is already limited to stage/code changes.
+export function isExplicitRejection(error) {
+  if (error?.code === 'START_NOT_CONFIRMED') return true;
+  const status = error?.status;
+  return Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
 export function createTaskDispatcher(config, {
   state, snapshot, render, deliver, root,
   redeliveryMs = 60_000, now = Date.now, log = () => {}, taskSecret = () => undefined,
@@ -59,6 +68,16 @@ export function createTaskDispatcher(config, {
       record = await state.reconcile(record.task_id, { generation: record.generation, replay: true });
       return;
     }
+    const decided = entry.handoff_failure?.fail_reason;
+    if (decided && record.execution.quiesced && !record.execution.accepted && record.start_confirmed) {
+      // The bound already decided to fail this task and stopped admission, but
+      // the fail report did not get through; finish it.
+      progress.stage = 'report';
+      const result = await state.report(record.task_id, record.generation, 'fail', { error: decided, failure_reason: 'environment_prepare_failed' });
+      const failure = entry.handoff_failure;
+      log('ERROR', 'task handoff failed permanently', { task_id: record.task_id, stage: failure.stage, code: failure.code, attempts: failure.attempts, outcome: reportOutcome(result) });
+      return;
+    }
     if (record.execution.accepted || record.execution.quiesced) return;
     if (record.delivery?.delivered) {
       if (entry.dueAt && Date.parse(entry.dueAt) > now()) return;
@@ -84,30 +103,41 @@ export function createTaskDispatcher(config, {
   }
   // A pending report keeps reconciling on later ticks through the report path.
   const reportOutcome = result => result?.report?.state === 'confirmed' ? 'reported_fail' : 'fail_report_pending';
+  // Without a confirmed start Multica accepts no terminal write for this claim,
+  // so the only end is a local stop, and only once Multica has refused it.
+  async function stopIfRejected(record, error) {
+    if (!isExplicitRejection(error)) return 'retrying';
+    if (!await state.quiesceUnaccepted(record.task_id, record.generation)) return 'left_to_agent';
+    return 'stopped_locally';
+  }
   // Ends a handoff that exhausted its retry bound through the existing
-  // lifecycle primitives. Returns the outcome label for the single ERROR line.
-  async function terminate(entry, failure) {
+  // lifecycle primitives. Returns the outcome label for the single ERROR line,
+  // or 'retrying' while the failure may still be transient.
+  async function terminate(entry, failure, error) {
     const record = state.get(entry.task.id);
     if (!record || record.generation !== entry.generation) return 'stopped_locally';
     if (record.execution.accepted) return 'left_to_agent'; // Admitted work is never failed by the dispatcher.
     if (record.report) return 'stopped_locally'; // Report reconciliation already owns the outcome.
     const reason = `task handoff failed at ${failure.stage}: ${failure.code} (${failure.attempts} attempts)`;
-    if (record.preparation_failure || (!record.delivery && !record.start_confirmed && !record.start_unknown)) {
+    // A frozen prestart termination is what step() already retries every tick
+    // (its fail report needs a confirmed start); the frozen reason is kept.
+    if (record.preparation_failure) return stopIfRejected(record, error);
+    if (!record.delivery && !record.start_confirmed && !record.start_unknown) {
       // No frozen card, nothing delivered: the #42 prestart termination path.
-      return reportOutcome(await finishAbandonment(state, record.task_id, record.generation, record.preparation_failure?.reason ?? reason, { config }));
+      return reportOutcome(await finishAbandonment(state, record.task_id, record.generation, reason, { config }));
     }
     if (record.start_confirmed) {
       // The card may have reached the session; stop admission first, then fail
-      // with the same primitives as failScheduled.
+      // with the same primitives as failScheduled. The decision is persisted
+      // with the failure so step() can finish the report if it fails here.
+      failure.fail_reason ??= reason;
       if (!await state.quiesceUnaccepted(record.task_id, record.generation)) return 'left_to_agent';
       await state.markQuiesced(record.task_id, record.generation);
-      return reportOutcome(await state.report(record.task_id, record.generation, 'fail', { error: reason, failure_reason: 'environment_prepare_failed' }));
+      return reportOutcome(await state.report(record.task_id, record.generation, 'fail', { error: failure.fail_reason, failure_reason: 'environment_prepare_failed' }));
     }
-    // The original claim was never confirmed running, so the platform rejects
-    // any terminal write for it. Stop local retries; the platform's own timeout
-    // owns the task from here.
-    if (!await state.quiesceUnaccepted(record.task_id, record.generation)) return 'left_to_agent';
-    return 'stopped_locally';
+    // The original claim was never confirmed running. Once Multica refuses it,
+    // stop local retries; the platform's own timeout owns the task from there.
+    return stopIfRejected(record, error);
   }
   async function recordFailure(entry, stage, error) {
     const id = entry.task.id;
@@ -115,21 +145,23 @@ export function createTaskDispatcher(config, {
     const stored = read(id) ?? { scope, task: { id }, generation: entry.generation };
     if (stored.generation !== entry.generation || stored.handoff_failure?.terminal) return;
     const previous = stored.handoff_failure;
-    const failure = { first_at: previous?.first_at ?? now(), attempts: (previous?.attempts ?? 0) + 1, last_at: now(), stage, code: detail.code };
+    const failure = { first_at: previous?.first_at ?? now(), attempts: (previous?.attempts ?? 0) + 1, last_at: now(), stage, code: detail.code,
+      ...(previous?.fail_reason ? { fail_reason: previous.fail_reason } : {}) };
     stored.handoff_failure = failure;
-    const exhausted = failure.attempts >= HANDOFF_FAILURE_MIN_ATTEMPTS && now() - failure.first_at >= HANDOFF_FAILURE_MIN_MS;
-    if (!exhausted) {
+    const deferred = () => {
       save(stored);
-      // Bounded by the cap: first failure and every stage/code change only.
+      // First failure and every stage/code change only.
       if (!previous || previous.stage !== stage || previous.code !== detail.code) {
         log('WARN', 'task handoff deferred', { task_id: id, stage, ...detail, attempts: failure.attempts });
       }
-      return;
-    }
+    };
+    const exhausted = failure.attempts >= HANDOFF_FAILURE_MIN_ATTEMPTS && now() - failure.first_at >= HANDOFF_FAILURE_MIN_MS;
+    if (!exhausted) return deferred();
     let outcome;
     let terminalError;
-    try { outcome = await terminate(stored, failure); }
-    catch (caught) { outcome = 'stopped_locally'; terminalError = caught; }
+    try { outcome = await terminate(stored, failure, error); }
+    catch (caught) { terminalError = caught; outcome = isExplicitRejection(caught) ? 'stopped_locally' : 'retrying'; }
+    if (outcome === 'retrying') return deferred();
     if (outcome === 'stopped_locally') {
       failure.terminal = true;
       // A quiesce keeps begin() fenced; best effort when the terminal path itself failed.
