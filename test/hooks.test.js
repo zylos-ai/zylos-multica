@@ -19,6 +19,21 @@ function run(script, args, options = {}) {
   });
 }
 
+// post-install ends with `pm2 describe zylos-multica-bridge`. A real pm2 starts
+// a God Daemon in whatever PM2_HOME it finds and leaves it running, so tests
+// that run post-install put this stub first on PATH: it records its arguments
+// and answers "not found" (exit 1), and no daemon is ever started.
+function stubPm2(home) {
+  const bin = path.join(home, 'stub-bin');
+  const calls = path.join(bin, 'calls.log');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'pm2'), `#!/bin/sh\necho "$*" >> '${calls}'\nexit 1\n`, { mode: 0o755 });
+  return {
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    calls: () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : []),
+  };
+}
+
 function runAsync(script, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(root, script), ...args], options);
@@ -216,9 +231,11 @@ test('post-install migrates a legacy workspace_id config to workspace_slug', asy
     daemon_id: 'daemon-1',
     runtime: { name: 'Agent (zylos)' },
   }), { mode: 0o600 });
-  const result = await runAsync('hooks/post-install.js', [], { env: { ...process.env, HOME: home } });
+  const pm2 = stubPm2(home);
+  const result = await runAsync('hooks/post-install.js', [], { env: { ...process.env, HOME: home, PATH: pm2.PATH } });
   server.close();
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(pm2.calls(), ['describe zylos-multica-bridge'], 'the duplicate-service check reached the stub, not a real pm2');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   assert.equal(config.workspace_slug, 'zylos-lab');
   assert.equal(config.workspace_id, undefined);
@@ -237,8 +254,10 @@ test('post-install defers migration when the server is unreachable', async () =>
     daemon_id: 'daemon-1',
     runtime: { name: 'Agent (zylos)' },
   }), { mode: 0o600 });
-  const result = await runAsync('hooks/post-install.js', [], { env: { ...process.env, HOME: home } });
+  const pm2 = stubPm2(home);
+  const result = await runAsync('hooks/post-install.js', [], { env: { ...process.env, HOME: home, PATH: pm2.PATH } });
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(pm2.calls(), ['describe zylos-multica-bridge'], 'the duplicate-service check reached the stub, not a real pm2');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   assert.equal(config.workspace_id, 'uuid-lab', 'config must stay untouched for daemon self-heal');
   assert.equal(config.workspace_slug, undefined);
