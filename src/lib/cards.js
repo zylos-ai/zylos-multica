@@ -45,10 +45,12 @@ function truncationNote(keptBytes, total, pointer) {
  *   order, the item crossing the limit is cut, the rest become one omitted line.
  * A note is an instruction line outside the quoted external text that names a
  * command reading the full text. Each round lowers the limit of the largest
- * shown field by the excess, so a field's shown size strictly decreases until
- * the card fits or nothing truncatable is left; no round cap is needed. Other
- * fields are short server metadata and are never truncated; an oversize card
- * still fails delivery and hits the dispatcher's bounded retry.
+ * shown field by the excess, and always strictly below that field's previous
+ * limit; a field at limit 0 is never picked again. Limits are non-negative
+ * integers, so the loop ends after finitely many rounds even if truncation
+ * misbehaves, without a round cap: the card fits, or nothing truncatable is
+ * left. Other fields are short server metadata and are never truncated; an
+ * oversize card still fails delivery and hits the dispatcher's bounded retry.
  */
 function fitCard(build, budget = CARD_BYTE_BUDGET) {
   const limits = new Map();
@@ -98,9 +100,10 @@ function fitCard(build, budget = CARD_BYTE_BUDGET) {
     const excess = Buffer.byteLength(card) - budget;
     if (excess <= 0) return card;
     let target;
-    for (const [key, bytes] of shown) if (bytes > 0 && (!target || bytes > target.bytes)) target = { key, bytes };
+    for (const [key, bytes] of shown) if (limits.get(key) !== 0 && bytes > 0 && (!target || bytes > target.bytes)) target = { key, bytes };
     if (!target) return card;
-    limits.set(target.key, Math.max(0, target.bytes - excess));
+    const previous = limits.get(target.key) ?? Infinity;
+    limits.set(target.key, Math.max(0, Math.min(target.bytes - excess, previous - 1)));
   }
 }
 
