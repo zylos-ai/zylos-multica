@@ -117,7 +117,9 @@ export function createTaskDispatcher(config, {
     const record = state.get(entry.task.id);
     if (!record || record.generation !== entry.generation) return 'stopped_locally';
     if (record.execution.accepted) return 'left_to_agent'; // Admitted work is never failed by the dispatcher.
-    if (record.report) return 'stopped_locally'; // Report reconciliation already owns the outcome.
+    // Report reconciliation owns the outcome and has its own attempt and backoff
+    // limits; a local error there (disk, history read) is retried, never a stop.
+    if (record.report) return 'retrying';
     const reason = `task handoff failed at ${failure.stage}: ${failure.code} (${failure.attempts} attempts)`;
     // A frozen prestart termination is what step() already retries every tick
     // (its fail report needs a confirmed start); the frozen reason is kept.

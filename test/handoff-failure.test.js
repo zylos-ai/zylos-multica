@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createTaskState } from '../src/lib/task-state.js';
+import { atomicTaskWrite, createTaskState } from '../src/lib/task-state.js';
 import { createTaskDispatcher, HANDOFF_FAILURE_MIN_ATTEMPTS, HANDOFF_FAILURE_MIN_MS, isExplicitRejection } from '../src/lib/task-dispatch.js';
 
 const PAT = 'mul_component_pat_SECRET_1234';
@@ -31,7 +31,9 @@ function fixture(overrides = {}) {
     if (kind === 'fail') return { ...task, status: 'failed', ...body };
     return { ...task, status: kind === 'start' ? 'running' : 'dispatched' };
   };
-  const state = createTaskState(config, { root: path.join(root, 'state'), request, now, removeTaskToken() {} });
+  // Real atomic writes; a test may make the state disk fail first.
+  const write = (file, value) => { overrides.write?.(file); atomicTaskWrite(file, value); };
+  const state = createTaskState(config, { root: path.join(root, 'state'), request, now, write, removeTaskToken() {} });
   const deps = {
     state, request, root: path.join(root, 'dispatch'), now,
     log: (level, message, extra) => logs.push({ level, message, extra }),
@@ -292,6 +294,45 @@ test('a transient failure of the terminal path keeps retrying; a rejection there
   for (let i = 0; i < 3; i++) { rejected.advance(600_000); await rejected.tick(d); }
   assert.equal(rejected.count('start'), starts);
   assert.equal(renders, 3);
+});
+
+test('a local reconcile error on a pending fail report keeps retrying and reconciles once it recovers', async t => {
+  const REASON = 'task handoff failed at deliver: E2BIG (3 attempts)';
+  let diskDown = false;
+  let failPosts = 0;
+  let remote = null;
+  const f = fixture({
+    deliver: () => { throw Object.assign(Error('spawn E2BIG'), { code: 'E2BIG' }); },
+    // The first fail POST gets no answer and the history has no row yet, so the report stays pending_unknown.
+    request: kind => {
+      if (kind === 'fail' && ++failPosts === 1) throw Error('socket hang up');
+      if (kind === 'task-runs') return remote ? [remote] : [];
+    },
+    write: () => { if (diskDown) throw Object.assign(Error(`EIO: i/o error, write ${CLAIM}`), { code: 'EIO' }); },
+  });
+  t.after(f.cleanup);
+  const d = f.make(); await d.enqueue(task); await d.drain();
+  f.advance(300_000); await f.tick(d);
+  f.advance(300_000); await f.tick(d); // bound: quiesced, fail POST uncertain
+  assert.equal(f.state.get(task.id).report.state, 'pending_unknown');
+  assert.deepEqual(f.logs.filter(l => l.level === 'ERROR').map(l => l.extra.outcome), ['fail_report_pending']);
+  // The state disk fails for 15 minutes; every reconcile throws EIO.
+  diskDown = true;
+  for (let i = 0; i < 3; i++) { f.advance(300_000); await f.tick(d); }
+  diskDown = false;
+  assert.equal(f.entry().handoff_failure.terminal, undefined, 'never stopped locally');
+  assert.equal(f.entry().handoff_failure.stage, 'reconcile');
+  assert.equal(f.entry().handoff_failure.attempts, 6);
+  // Multica recorded the fail; the next reconcile reads it back.
+  remote = { ...task, status: 'failed', error: REASON, failure_reason: 'environment_prepare_failed' };
+  f.advance(300_000); await f.tick(d);
+  assert.equal(f.state.get(task.id).report.state, 'confirmed');
+  assert.equal(f.entry().handoff_failure, undefined);
+  assert.equal(failPosts, 1, 'a fail POST with an unknown outcome is never blindly repeated');
+  assert.deepEqual(f.logs.filter(l => l.level === 'ERROR').map(l => l.extra.outcome), ['fail_report_pending']);
+  const reconcileWarns = f.logs.filter(l => l.level === 'WARN' && l.extra.stage === 'reconcile');
+  assert.deepEqual(reconcileWarns.map(l => [l.extra.code, l.extra.attempts]), [['EIO', 4]]);
+  assert.deepEqual(secretsIn(JSON.stringify(f.logs)), []);
 });
 
 // The #42 prestart termination (here from a context snapshot failure) retries

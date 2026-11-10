@@ -40,17 +40,22 @@ function truncationNote(keptBytes, total, pointer) {
  * Builds a card whose external free-text fields are truncated, largest first,
  * until the whole card fits the byte budget. `build({ clip, clipList })`:
  * - clip(key, text, pointer) -> { text, note } for one field;
- * - clipList(key, items, omittedPointer) -> { items: [{ index, text, note }], omittedNote }
- *   for a list counted as ONE field: the earliest items that fit are kept in
- *   order, the item crossing the limit is cut, the rest become one omitted line.
+ * - clipList(key, items, omittedPointer) -> { items: [{ index, block }], omittedNote }
+ *   for a list counted as ONE field. Each item is { text, pointer,
+ *   render(text, note) } and is counted as rendered (header line, quote
+ *   prefixes, note, joining newline), so the count is what the card holds. The
+ *   earliest items that fit are kept in order, the item crossing the limit is
+ *   cut, the rest become one omitted line.
  * A note is an instruction line outside the quoted external text that names a
  * command reading the full text. Each round lowers the limit of the largest
  * shown field by the excess, and always strictly below that field's previous
- * limit; a field at limit 0 is never picked again. Limits are non-negative
- * integers, so the loop ends after finitely many rounds even if truncation
- * misbehaves, without a round cap: the card fits, or nothing truncatable is
- * left. Other fields are short server metadata and are never truncated; an
- * oversize card still fails delivery and hits the dispatcher's bounded retry.
+ * limit; a field at limit 0 is never picked again. Since a field never shows
+ * more than its limit, this takes a few rounds. Limits are non-negative
+ * integers, so the loop is finite even if truncation returned more bytes than
+ * asked, but then it can take ~100k rounds (seconds) and the card may stay
+ * over budget. Other fields are short server metadata and are never
+ * truncated; an oversize card still fails delivery and hits the dispatcher's
+ * bounded retry.
  */
 function fitCard(build, budget = CARD_BYTE_BUDGET) {
   const limits = new Map();
@@ -72,20 +77,23 @@ function fitCard(build, budget = CARD_BYTE_BUDGET) {
       let remaining = limits.get(key) ?? Infinity;
       let used = 0;
       const kept = [];
-      // Each item costs one byte more than its text, so even empty comments
-      // (whose header lines still take space) can be omitted.
       for (const [index, item] of items.entries()) {
-        const total = Buffer.byteLength(item.text);
-        if (total + 1 <= remaining) {
-          kept.push({ index, text: item.text, note: '' });
-          remaining -= total + 1; used += total + 1;
+        const block = item.render(item.text, '');
+        const cost = Buffer.byteLength(block) + 1; // + the newline joining it to the card
+        if (cost <= remaining) {
+          kept.push({ index, block });
+          remaining -= cost; used += cost;
           continue;
         }
-        const text = truncateUtf8(item.text, remaining - 1);
+        // Cut the crossing item: charge its rendered overhead and the longest
+        // possible note first, then keep what is left of its text.
+        const total = Buffer.byteLength(item.text);
+        const overhead = cost - total + Buffer.byteLength(truncationNote(total, total, item.pointer)) + 1;
+        const text = truncateUtf8(item.text, remaining - overhead);
         if (text) {
-          const keptBytes = Buffer.byteLength(text);
-          kept.push({ index, text, note: truncationNote(keptBytes, total, item.pointer) });
-          used += keptBytes + 1;
+          const cut = item.render(text, truncationNote(Buffer.byteLength(text), total, item.pointer));
+          const cutCost = Buffer.byteLength(cut) + 1;
+          if (cutCost <= remaining) { kept.push({ index, block: cut }); used += cutCost; }
         }
         break;
       }
@@ -213,16 +221,16 @@ function buildFollowUpCard(task, issue, context, { clip, clipList }) {
   if (coalesced.length) {
     lines.push('', `This run also covers ${coalesced.length} earlier comment(s) posted before it started — address them too:`);
     // Kept in the server's order: the earliest comments that fit stay.
-    const shown = clipList('coalesced_comments', coalesced.map((item) => ({
-      text: sanitizeExternalText(item?.content).trim(),
-      pointer: threadPointer(sanitizeExternalText(item?.id).trim()),
-    })), threadPointer(''));
-    for (const { index, text, note } of shown.items) {
-      const item = coalesced[index];
+    const shown = clipList('coalesced_comments', coalesced.map((item) => {
       const who = authorLabel(item?.author_type, item?.author_name);
       const when = sanitizeExternalText(item?.created_at).trim();
-      lines.push(`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(text || '(empty comment)'), ...(note ? [note] : []));
-    }
+      return {
+        text: sanitizeExternalText(item?.content).trim(),
+        pointer: threadPointer(sanitizeExternalText(item?.id).trim()),
+        render: (text, note) => [`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(text || '(empty comment)'), ...(note ? [note] : [])].join('\n'),
+      };
+    }), threadPointer(''));
+    for (const { block } of shown.items) lines.push(block);
     if (shown.omittedNote) lines.push(shown.omittedNote);
   }
   const newCount = Number(task.new_comment_count) || 0;

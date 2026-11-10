@@ -129,6 +129,30 @@ test('many coalesced comments keep the earliest that fit and summarize the rest 
   }
 });
 
+test('thousands of short coalesced comments: nearly the largest prefix that fits is shown', () => {
+  // A comment costs its header line and quote prefix too, not only its text.
+  for (const [count, size] of [[2500, 8], [1500, 100]]) {
+    const coalesced = Array.from({ length: count }, (_, i) => ({
+      id: `s-${i}`, author_name: 'member', created_at: '2026-11-10T00:00:00Z', content: `#${i}#${'x'.repeat(Math.max(0, size - String(i).length - 2))}`,
+    }));
+    const task = { id: 'task-9', issue_id: 'issue-1', trigger_comment_id: 'c-t', trigger_comment_content: 'see above' };
+    const card = buildTaskCard({ ...task, coalesced_comments: coalesced }, issue);
+    assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${count}x${size}: ${bytes(card)} bytes`);
+    const shown = [...card.matchAll(/^> #(\d+)#/gm)].length;
+    // Largest k whose first k comments, all shown whole, fit the budget. This
+    // card has no omitted line, so k is an upper bound for the real card.
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const k = Math.ceil((lo + hi) / 2);
+      if (bytes(buildTaskCard({ ...task, coalesced_comments: coalesced.slice(0, k) }, issue, undefined, { budget: Infinity })) <= CARD_BYTE_BUDGET) lo = k;
+      else hi = k - 1;
+    }
+    assert.ok(lo > 0 && lo < count, `${count}x${size}: largest fitting prefix ${lo}`);
+    assert.ok(shown >= 0.9 * lo, `${count}x${size}: ${shown} shown, ${lo} fit`);
+  }
+});
+
 test('thousands of empty coalesced comments still fit', () => {
   const coalesced = Array.from({ length: 4000 }, (_, i) => ({ id: `e-${i}`, author_name: 'member', content: '' }));
   const card = buildTaskCard({ id: 'task-8', issue_id: 'issue-1', trigger_comment_id: 'c', trigger_comment_content: 'x', coalesced_comments: coalesced }, issue);
