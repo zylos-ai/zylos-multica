@@ -16,6 +16,63 @@ export function sanitizeExternalText(value) {
 
 const MULTICA_CLI_PATH = path.join(os.homedir(), 'zylos/.claude/skills/multica/scripts/multica.js');
 
+// C4 receives the card as ONE argv value; Linux rejects a single argument of
+// 131072 bytes or more (MAX_ARG_STRLEN) with a synchronous spawn E2BIG. The
+// budget is in UTF-8 bytes and leaves room for the other arguments.
+export const CARD_BYTE_BUDGET = 96 * 1024;
+
+/** Longest prefix of `text` within `maxBytes` UTF-8 bytes; never splits a character. */
+export function truncateUtf8(text, maxBytes) {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) return text;
+  let end = Math.max(0, Math.floor(maxBytes));
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--; // bytes[end] continues the previous character
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+/**
+ * Builds a card whose external free-text fields are truncated, largest first,
+ * until the whole card fits the byte budget. `build(clip)` calls
+ * clip(key, text, pointer) per field and receives { text, note }, where note is
+ * an instruction line (outside the quoted external text) pointing at a command
+ * that reads the full text. Other fields are short server metadata and are
+ * never truncated; an oversize card still fails delivery and hits the
+ * dispatcher's bounded retry instead of looping.
+ */
+function fitCard(build, budget = CARD_BYTE_BUDGET) {
+  const limits = new Map();
+  let card;
+  for (let round = 0; round < 64; round += 1) {
+    const shown = new Map();
+    card = build((key, text, pointer) => {
+      const total = Buffer.byteLength(text);
+      const limit = limits.get(key);
+      if (limit === undefined || total <= limit) {
+        shown.set(key, total);
+        return { text, note: '' };
+      }
+      const kept = truncateUtf8(text, limit);
+      const keptBytes = Buffer.byteLength(kept);
+      shown.set(key, keptBytes);
+      return {
+        text: kept,
+        note: `[Truncated to fit the session handoff: showing ${keptBytes} of ${total} bytes. Full text: ${pointer || 'not available from this card; ask the requester'}]`,
+      };
+    });
+    const excess = Buffer.byteLength(card) - budget;
+    if (excess <= 0) return card;
+    let target;
+    for (const [key, bytes] of shown) if (bytes > 0 && (!target || bytes > target.bytes)) target = { key, bytes };
+    if (!target) return card;
+    limits.set(target.key, Math.max(0, target.bytes - excess));
+  }
+  return card;
+}
+
+function cliCommand(...args) {
+  return `node ${shellQuote(MULTICA_CLI_PATH)} ${args.join(' ')}`;
+}
+
 function quoteBlock(text) {
   return String(text)
     .split(/\r\n|\n|\r/u)
@@ -84,25 +141,29 @@ function taskCardFooter(taskId) {
 // carries the triggering comment (and any earlier comments coalesced into
 // this run); the card must lead with THAT, not with the issue text, or the
 // agent answers the original request again (zylos-multica #21).
-function buildFollowUpCard(task, issue, context) {
+function buildFollowUpCard(task, issue, context, clip) {
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
   const issueRef = sanitizeExternalText(issue?.identifier || task.issue_id || '');
   const author = authorLabel(task.trigger_author_type, task.trigger_author_name);
-  const comment = sanitizeExternalText(task.trigger_comment_content).trim();
+  const triggerCommentId = sanitizeExternalText(task.trigger_comment_id).trim();
+  const threadPointer = (id) => (issueRef
+    ? cliCommand('issue comment list', shellQuote(issueRef), ...(id ? ['--thread', shellQuote(id)] : []), '--output json')
+    : '');
+  const comment = clip('trigger_comment', sanitizeExternalText(task.trigger_comment_content).trim(), threadPointer(triggerCommentId));
   const lines = [
     `[Multica follow-up] ${title}`,
     `Requested by: ${author} · Task ID: ${taskId}`,
     '',
     `${author} left a NEW COMMENT on this issue. Reply to THIS comment — do not treat the original issue text below as the request:`,
     '',
-    comment ? quoteBlock(comment) : '> (empty comment)',
+    comment.text ? quoteBlock(comment.text) : '> (empty comment)',
+    ...(comment.note ? [comment.note] : []),
   ];
   // A comment-triggered task may only comment in-thread (the server 409s a
   // top-level comment), and only the task token makes that comment the
   // agent's own — so hand over the exact command, id included.
-  const triggerCommentId = sanitizeExternalText(task.trigger_comment_id).trim();
   if (triggerCommentId && issueRef) {
     lines.push(
       '',
@@ -112,12 +173,13 @@ function buildFollowUpCard(task, issue, context) {
   const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
   if (coalesced.length) {
     lines.push('', `This run also covers ${coalesced.length} earlier comment(s) posted before it started — address them too:`);
-    for (const item of coalesced) {
+    coalesced.forEach((item, index) => {
       const who = authorLabel(item?.author_type, item?.author_name);
       const when = sanitizeExternalText(item?.created_at).trim();
-      const body = sanitizeExternalText(item?.content).trim() || '(empty comment)';
-      lines.push(`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(body));
-    }
+      const body = clip(`coalesced_comment:${index}`, sanitizeExternalText(item?.content).trim(),
+        threadPointer(sanitizeExternalText(item?.id).trim()));
+      lines.push(`- ${who}${when ? ` (${when})` : ''}:`, quoteBlock(body.text || '(empty comment)'), ...(body.note ? [body.note] : []));
+    });
   }
   const newCount = Number(task.new_comment_count) || 0;
   if (newCount > 0 && issueRef) {
@@ -127,15 +189,20 @@ function buildFollowUpCard(task, issue, context) {
     );
   }
   if (description) {
-    lines.push('', 'Original issue description (context only):', quoteBlock(description));
+    const shown = clip('description', description, issueRef ? cliCommand('issue get', shellQuote(issueRef), '--output json') : '');
+    lines.push('', 'Original issue description (context only):', quoteBlock(shown.text), ...(shown.note ? [shown.note] : []));
   }
   lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(task.execution_generation ? `${taskId}@${sanitizeExternalText(task.execution_generation)}` : taskId));
   lines.push(...taskContextLines(context), ...resourceLines(task), ...executionLines(task));
   return lines.join('\n');
 }
 
-export function buildTaskCard(task, issue, context) {
-  if (task?.trigger_comment_id || task?.trigger_comment_content) return buildFollowUpCard(task, issue, context);
+export function buildTaskCard(task, issue, context, { budget = CARD_BYTE_BUDGET } = {}) {
+  if (task?.trigger_comment_id || task?.trigger_comment_content) return fitCard((clip) => buildFollowUpCard(task, issue, context, clip), budget);
+  return fitCard((clip) => buildNewTaskCard(task, issue, context, clip), budget);
+}
+
+function buildNewTaskCard(task, issue, context, clip) {
   const taskId = sanitizeExternalText(task.id);
   const title = sanitizeExternalText(issue?.title || task.thread_name || '(untitled)');
   const description = sanitizeExternalText(issue?.description || '').trim();
@@ -143,11 +210,14 @@ export function buildTaskCard(task, issue, context) {
     task.attribution?.initiator?.name || issue?.creator?.name || issue?.created_by_name || '',
   );
   const handoff = sanitizeExternalText(task.handoff_note || '').trim();
+  const issueRef = sanitizeExternalText(issue?.identifier || task.issue_id || '');
+  const shown = clip('description', description, issueRef ? cliCommand('issue get', shellQuote(issueRef), '--output json') : '');
   const lines = [
     `[Multica task] ${title}`,
     `${initiator ? `Requested by: ${initiator} · ` : ''}Task ID: ${taskId}`,
     '',
-    description || '(No description; use the title as the task request.)',
+    shown.text || '(No description; use the title as the task request.)',
+    ...(shown.note ? [shown.note] : []),
   ];
   if (handoff) {
     lines.push('', 'Handoff note from the assigner (scoping instruction for this run, not a comment to reply to):', quoteBlock(handoff));
@@ -157,12 +227,19 @@ export function buildTaskCard(task, issue, context) {
   return lines.join('\n');
 }
 
-export function buildChatCard(task, context) {
+export function buildChatCard(task, context, { budget = CARD_BYTE_BUDGET } = {}) {
+  return fitCard((clip) => buildChatCardLines(task, context, clip), budget);
+}
+
+function buildChatCardLines(task, context, clip) {
+  const message = clip('chat_message', sanitizeExternalText(task.chat_message || '(empty message)'),
+    cliCommand('chat history', '--task', shellQuote(sanitizeExternalText(task.id)), '--output json'));
   const lines = [
     `[Multica chat] ${sanitizeExternalText(task.thread_name || '(new conversation)')}`,
     `Session ID: ${sanitizeExternalText(task.chat_session_id)} · Task ID: ${sanitizeExternalText(task.id)}`,
     '',
-    sanitizeExternalText(task.chat_message || '(empty message)'),
+    message.text,
+    ...(message.note ? [message.note] : []),
   ];
   lines.push(...attachmentLines(task));
   lines.push(
