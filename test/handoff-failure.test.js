@@ -379,6 +379,47 @@ test('prestart termination with a transient start failure keeps retrying and rep
   assert.equal(f.entry().handoff_failure, undefined);
 });
 
+test('stale state record at the bound: record lost or generation replaced stops locally with one ERROR and no platform write', async t => {
+  const stateFiles = f => fs.readdirSync(path.join(f.root, 'state')).filter(name => name.endsWith('.json')).map(name => path.join(f.root, 'state', name));
+  const cases = [
+    { name: 'record lost', replace: async f => { for (const file of stateFiles(f)) fs.rmSync(file); } },
+    // registerClaim refuses to change an existing claim, so a replaced generation
+    // means the old record went away and the claim was registered again.
+    { name: 'generation replaced', replace: async f => { for (const file of stateFiles(f)) fs.rmSync(file); await f.state.registerClaim(task); } },
+  ];
+  for (const item of cases) {
+    const f = fixture({ deliver: () => false }); t.after(f.cleanup);
+    const d = f.make(); await d.enqueue(task); await d.drain(); // attempt 1: deliver unconfirmed
+    const generation = f.entry().generation;
+    await item.replace(f);
+    const replaced = f.state.get(task.id);
+    if (item.name === 'record lost') assert.equal(replaced, null);
+    else assert.notEqual(replaced.generation, generation, 'new generation registered');
+    const calls = f.calls.length;
+    f.advance(300_000); await f.tick(d); // attempt 2
+    f.advance(300_000); await f.tick(d); // attempt 3 at exactly 10 minutes: bound reached
+    assert.equal(f.calls.length, calls, `${item.name}: no request after the record went stale`);
+    const failure = f.entry().handoff_failure;
+    assert.equal(failure.terminal, true, item.name);
+    assert.equal(failure.attempts, 3);
+    assert.equal(failure.stage, 'state_read');
+    assert.equal(failure.code, 'STALE_PREPARATION');
+    const errors = f.logs.filter(l => l.level === 'ERROR');
+    assert.deepEqual(errors.map(l => [l.message, l.extra.stage, l.extra.code, l.extra.attempts, l.extra.outcome, l.extra.terminal_error]),
+      [['task handoff failed permanently', 'state_read', 'STALE_PREPARATION', 3, 'stopped_locally', undefined]], item.name);
+    // The replacement record is not this entry's to touch.
+    assert.deepEqual(f.state.get(task.id), replaced, `${item.name}: current record unchanged`);
+    const logs = f.logs.length;
+    for (let i = 0; i < 5; i++) { f.advance(600_000); await f.tick(d); }
+    const resumed = f.make(); await f.tick(resumed); // restart keeps the stop
+    f.advance(600_000); await f.tick(resumed);
+    assert.equal(f.calls.length, calls, `${item.name}: no request after the stop, including after restart`);
+    assert.equal(f.logs.length, logs, `${item.name}: no further logs`);
+    assert.deepEqual(f.entry().handoff_failure, failure);
+    assert.deepEqual(f.state.get(task.id), replaced);
+  }
+});
+
 test('a task admitted by the agent is never failed by the bound', async t => {
   const f = fixture({ deliver: () => false }); t.after(f.cleanup);
   const d = f.make(); await d.enqueue(task); await d.drain();
