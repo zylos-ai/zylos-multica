@@ -73,6 +73,7 @@ test('unrecognized or incomplete legacy bundles fall back to the single trigger 
     legacyBundle.replace('--- end comment 11111111-', '--- end comment 33333333-'),
     legacyBundle + '\nUnexpected trailing content',
     legacyBundle.replace('[author agent: Luna]', '[author agent: Lu]na]'),
+    legacyBundle.replaceAll('22222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111'),
   ];
   for (const content of contents) {
     const card = buildTaskCard({id:'t',trigger_comment_id:'c',trigger_author_name:'Trigger',trigger_comment_content:content});

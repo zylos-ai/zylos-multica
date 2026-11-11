@@ -143,13 +143,15 @@ function legacyCommentSummary(value) {
   const header = 'This run covers multiple distinct issue comments. Address every comment below in chronological order; do not treat this bundle as one rewritten comment.\n';
   if (typeof value !== 'string' || !value.startsWith(header)) return null;
   let remaining = value.slice(header.length).trimStart();
+  const ids = new Set();
   let count = 0;
   let latest;
   while (remaining) {
     const newline = remaining.indexOf('\n');
     if (newline < 0) return null;
     const entry = /^--- comment (\S+?)(?: \[thread [^\]\n]+\])?(?: \[author [^:\]\n]*(?:: ([^\]\n]*))?\])?(?: \[created [^\]\n]+\])? ---$/u.exec(remaining.slice(0, newline));
-    if (!entry) return null;
+    if (!entry || ids.has(entry[1])) return null;
+    ids.add(entry[1]);
     const end = `\n--- end comment ${entry[1]} ---`;
     const offset = remaining.indexOf(end, newline + 1);
     if (offset < 0) return null;
