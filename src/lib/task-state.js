@@ -219,7 +219,7 @@ export function createTaskState(config, options = {}) {
     });
     // Ordinary responses truncate dispatched_at; the server validated the
     // exact original timestamp in our request. Never replace it with the echo.
-    if (!identity(record, response) || response.runtime_id !== record.runtime_id || response.status !== 'running') throw new Error('start response did not confirm original claim');
+    if (!identity(record, response) || response.runtime_id !== record.runtime_id || response.status !== 'running') throw Object.assign(new Error('start response did not confirm original claim'), { code: 'START_NOT_CONFIRMED' });
     return response;
   }
   async function send(record) {

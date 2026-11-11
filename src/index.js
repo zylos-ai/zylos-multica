@@ -15,7 +15,8 @@ import { DATA_DIR, getConfig, persistWorkspaceSlugMigration, stopWatching, watch
 import { multicaRequest } from './lib/multica-api.js';
 import { ensureWorkspaceResolved } from './lib/workspace.js';
 import { storeTaskContext, TaskContextError } from './lib/task-context.js';
-import { storeTaskToken } from './lib/task-tokens.js';
+import { loadTaskToken, storeTaskToken } from './lib/task-tokens.js';
+import { describeError, errorCode, redactSecrets } from './lib/log-redact.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 import { createWakeupChannel } from './lib/wakeup.js';
 
@@ -32,11 +33,19 @@ const log = (level, message, extra) => {
   console.log(`${new Date().toISOString()} ${level} [multica] ${message}${suffix}`);
 };
 
-function runNodeScript(script, args, timeout = 20_000) {
+export function runNodeScript(script, args, timeout = 20_000) {
   return new Promise((resolve) => {
-    const child = execFile('node', [script, ...args], { timeout }, (error, stdout, stderr) => {
-      resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr), error });
-    });
+    let child;
+    try {
+      child = execFile('node', [script, ...args], { timeout }, (error, stdout, stderr) => {
+        resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr), error });
+      });
+    } catch (error) {
+      // spawn() rejects some failures synchronously (e.g. E2BIG for an argument
+      // over the kernel's per-argument limit); keep the {ok:false} contract.
+      resolve({ ok: false, stdout: '', stderr: '', error });
+      return;
+    }
     child.on('error', (error) => resolve({ ok: false, stdout: '', stderr: '', error }));
   });
 }
@@ -142,14 +151,34 @@ export function createBridge(initialConfig, dependencies = {}) {
     log('INFO', 'registered', { runtime_id: runtimeId, ...(serverVersion ? { server_version: serverVersion } : {}) });
   }
 
-  async function deliverToC4(content, endpoint) {
+  // c4-receive --json reports failures as {"ok":false,"error":{code,message}}
+  // on stdout with an empty stderr. Never log result.error.cmd or the child
+  // error's message verbatim: both carry the card argv.
+  function c4Failure(result) {
+    let reported;
+    try { reported = JSON.parse(String(result.stdout).trim().split('\n').at(-1))?.error; } catch { reported = undefined; }
+    if (reported && typeof reported.code === 'string' && reported.code) {
+      return { code: reported.code.slice(0, 64), error: redactSecrets(String(reported.message ?? ''), [config.pat]).slice(0, 200) };
+    }
+    return {
+      code: errorCode(result.error),
+      error: result.stderr ? redactSecrets(result.stderr, [config.pat]).slice(0, 200) : describeError(result.error, [config.pat]).error,
+    };
+  }
+
+  async function deliverToC4Result(content, endpoint) {
     const result = await runScript(C4_RECEIVE, [
       '--channel', 'multica', '--endpoint', String(endpoint), '--json', '--content', content,
     ]);
     if (!result.ok) {
-      log('ERROR', 'c4 delivery failed', { endpoint: String(endpoint), error: result.stderr.slice(0, 200) });
+      result.failure = c4Failure(result);
+      log('ERROR', 'c4 delivery failed', { endpoint: String(endpoint), ...result.failure });
     }
-    return result.ok;
+    return result;
+  }
+
+  async function deliverToC4(content, endpoint) {
+    return (await deliverToC4Result(content, endpoint)).ok;
   }
 
   async function scheduleDelivery(content, task, dueAt) {
@@ -319,6 +348,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     const pick = (value, fields) => Object.fromEntries(fields.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
     dispatcher = createTaskDispatcher(config, {
       state, request, log,
+      taskSecret: id => loadTaskToken(id),
       root: dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'),
       snapshot: async task => {
         // Keep credentials only in the existing private token store. Prepared
@@ -340,7 +370,11 @@ export function createBridge(initialConfig, dependencies = {}) {
         if (delivery.dueAt && Date.parse(delivery.dueAt) > now()) {
           if (await scheduleDelivery(delivery.content, { ...task, reply_endpoint: delivery.endpoint }, new Date(delivery.dueAt))) return true;
         }
-        return deliverToC4(delivery.content, delivery.endpoint);
+        const result = await deliverToC4Result(delivery.content, delivery.endpoint);
+        if (!result.ok) {
+          throw Object.assign(new Error(`C4 delivery failed${result.failure.error ? `: ${result.failure.error}` : ''}`), { code: result.failure.code });
+        }
+        return true;
       },
     });
     return dispatcher;
