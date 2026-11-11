@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-11
+
+### Fixed
+
+- A task whose handoff to the agent session keeps failing no longer retries
+  forever with a bare "task handoff deferred" line. A WARN with the stage,
+  error code and a redacted reason is logged when the failure first happens and
+  when its stage or code changes (claim tokens, PATs, Bearer and `mat_`/`mul_`
+  strings are removed, and child-process command lines are never logged),
+  and one ERROR is logged when the task ends. After at
+  least 3 attempts and 10 minutes the task ends: it is abandoned or failed on
+  Multica with `environment_prepare_failed` when it was never accepted, or
+  stopped locally with one ERROR when Multica explicitly refused the claim.
+  Network errors, timeouts, 5xx, 408 and 429 keep retrying, and a task the
+  agent has already accepted is never failed (#56).
+- Very large comments, issue descriptions or chat messages (for example a
+  comment with embedded base64 images) no longer make the task card too large
+  to deliver (`spawn E2BIG`). Cards are kept within a 96 KiB budget: the
+  largest field is truncated first, on a character boundary, with a note naming
+  the CLI command that reads the full text, and older coalesced comments beyond
+  the budget become one "N more earlier comment(s) omitted" line (#56).
+
 ## [0.6.1] - 2026-10-31
 
 ### Fixed
