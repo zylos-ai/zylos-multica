@@ -133,8 +133,33 @@ function authorLabel(authorType, authorName, fallback = 'A user') {
 }
 
 function summaryText(value, limit = Infinity) {
-  const text = sanitizeExternalText(value).replace(/\s+/gu, ' ').trim();
+  const text = sanitizeExternalText(value)
+    .replace(/\[([^\]\r\n]*)\]\(mention:\/\/[^)\r\n]+\)/gu, (_, label) => label.startsWith('@') ? label : `@${label}`)
+    .replace(/\s+/gu, ' ').trim();
   return [...text].slice(0, limit).join('');
+}
+
+function legacyCommentSummary(value) {
+  const header = 'This run covers multiple distinct issue comments. Address every comment below in chronological order; do not treat this bundle as one rewritten comment.\n';
+  if (typeof value !== 'string' || !value.startsWith(header)) return null;
+  let remaining = value.slice(header.length).trimStart();
+  let count = 0;
+  let latest;
+  while (remaining) {
+    const newline = remaining.indexOf('\n');
+    if (newline < 0) return null;
+    const entry = /^--- comment (\S+?)(?: \[thread [^\]\n]+\])?(?: \[author [^:\]\n]*(?:: ([^\]\n]*))?\])?(?: \[created [^\]\n]+\])? ---$/u.exec(remaining.slice(0, newline));
+    if (!entry) return null;
+    const end = `\n--- end comment ${entry[1]} ---`;
+    const offset = remaining.indexOf(end, newline + 1);
+    if (offset < 0) return null;
+    const next = offset + end.length;
+    if (next !== remaining.length && remaining[next] !== '\n') return null;
+    latest = { author: entry[2], content: remaining.slice(newline + 1, offset) };
+    count += 1;
+    remaining = remaining.slice(next).trimStart();
+  }
+  return latest ? { ...latest, count } : null;
 }
 
 function summaryLine(label, subject, event, excerpt) {
@@ -210,11 +235,12 @@ function buildFollowUpCard(task, issue, context, { clip, clipList }) {
     : '');
   const comment = clip('trigger_comment', sanitizeExternalText(task.trigger_comment_content).trim(), threadPointer(triggerCommentId));
   const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
-  const latest = coalesced.at(-1);
-  const summaryAuthor = summaryText(coalesced.length ? latest?.author_name : task.trigger_author_name);
-  const summaryEvent = `${summaryAuthor ? `${summaryAuthor} ` : ''}${coalesced.length ? `等 ${coalesced.length} 条新评论` : '新评论'}`;
+  const legacy = coalesced.length ? null : legacyCommentSummary(task.trigger_comment_content);
+  const summaryAuthor = summaryText(legacy ? legacy.author : task.trigger_author_name);
+  const summaryCount = coalesced.length ? coalesced.length + 1 : legacy?.count;
+  const summaryEvent = `${summaryAuthor ? `${summaryAuthor} ` : ''}${summaryCount ? `等 ${summaryCount} 条新评论` : '新评论'}`;
   const lines = [
-    summaryLine('follow-up', issue?.identifier, summaryEvent, coalesced.length ? latest?.content : task.trigger_comment_content),
+    summaryLine('follow-up', issue?.identifier, summaryEvent, legacy ? legacy.content : task.trigger_comment_content),
     `卡片：${title}`,
     `Requested by: ${author} · Task ID: ${taskId}`,
     '',
@@ -304,8 +330,9 @@ function buildChatCardLines(task, context, { clip }) {
     cliCommand('chat history', '--task', shellQuote(sanitizeExternalText(task.id)), '--output json'));
   const attachments = taskAttachments(task);
   const excerpt = summaryText(task.chat_message) || (attachments.length ? `[附件] ${attachments.length} 个` : '');
+  const subject = summaryText(task.thread_name, 20);
   const lines = [
-    summaryLine('chat', task.thread_name, '新消息', excerpt),
+    summaryLine('chat', subject && !excerpt.startsWith(summaryText(task.thread_name)) ? subject : '', '新消息', excerpt),
     `会话：${sanitizeExternalText(task.thread_name || '(new conversation)')}`,
     `Session ID: ${sanitizeExternalText(task.chat_session_id)} · Task ID: ${sanitizeExternalText(task.id)}`,
     '',

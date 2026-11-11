@@ -61,7 +61,7 @@ test('comment-triggered tasks lead with the triggering comment, not the issue bo
     },
     { title: 'ZYLO-13 session', description: 'original request', identifier: 'ZYLO-13' },
   );
-  assert.match(card, /^\[Multica follow-up\] ZYLO-13 · howard 等 1 条新评论：earlier ask\n卡片：ZYLO-13 session\n/);
+  assert.match(card, /^\[Multica follow-up\] ZYLO-13 · howard 等 2 条新评论：可以先从 context 隔离开始考虑。 如何做？\n卡片：ZYLO-13 session\n/);
   assert.match(card, /howard left a NEW COMMENT/);
   assert.match(card, /> 可以先从 context 隔离开始考虑。\n> 如何做？/);
   assert.match(card, /1 earlier comment\(s\)[\s\S]*howard \(2026-08-25T00:00:00Z\):\n> earlier ask/);
