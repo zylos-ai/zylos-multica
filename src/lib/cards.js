@@ -132,6 +132,43 @@ function authorLabel(authorType, authorName, fallback = 'A user') {
   return name || fallback;
 }
 
+function summaryText(value, limit = Infinity) {
+  const text = sanitizeExternalText(value)
+    .replace(/\[([^\]\r\n]*)\]\(mention:\/\/[^)\r\n]+\)/gu, (_, label) => label.startsWith('@') ? label : `@${label}`)
+    .replace(/\s+/gu, ' ').trim();
+  return [...text].slice(0, limit).join('');
+}
+
+function legacyCommentSummary(value) {
+  const header = 'This run covers multiple distinct issue comments. Address every comment below in chronological order; do not treat this bundle as one rewritten comment.\n';
+  if (typeof value !== 'string' || !value.startsWith(header)) return null;
+  let remaining = value.slice(header.length).trimStart();
+  const ids = new Set();
+  let count = 0;
+  let latest;
+  while (remaining) {
+    const newline = remaining.indexOf('\n');
+    if (newline < 0) return null;
+    const entry = /^--- comment (\S+?)(?: \[thread [^\]\n]+\])?(?: \[author [^:\]\n]*(?:: ([^\]\n]*))?\])?(?: \[created [^\]\n]+\])? ---$/u.exec(remaining.slice(0, newline));
+    if (!entry || ids.has(entry[1])) return null;
+    ids.add(entry[1]);
+    const end = `\n--- end comment ${entry[1]} ---`;
+    const offset = remaining.indexOf(end, newline + 1);
+    if (offset < 0) return null;
+    const next = offset + end.length;
+    if (next !== remaining.length && remaining[next] !== '\n') return null;
+    latest = { author: entry[2], content: remaining.slice(newline + 1, offset) };
+    count += 1;
+    remaining = remaining.slice(next).trimStart();
+  }
+  return latest ? { ...latest, count } : null;
+}
+
+function summaryLine(label, subject, event, excerpt) {
+  const opening = summaryText(excerpt, 60);
+  return `[Multica ${label}] ${[summaryText(subject), `${event}${opening ? `：${opening}` : ''}`].filter(Boolean).join(' · ')}`;
+}
+
 function attachmentLines(task, issue) {
   const attachments = taskAttachments(task, issue);
   if (!attachments.length) return [];
@@ -199,8 +236,14 @@ function buildFollowUpCard(task, issue, context, { clip, clipList }) {
     ? cliCommand('issue comment list', shellQuote(issueRef), ...(id ? ['--thread', shellQuote(id)] : []), '--full --output json')
     : '');
   const comment = clip('trigger_comment', sanitizeExternalText(task.trigger_comment_content).trim(), threadPointer(triggerCommentId));
+  const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
+  const legacy = coalesced.length ? null : legacyCommentSummary(task.trigger_comment_content);
+  const summaryAuthor = summaryText(legacy ? legacy.author : task.trigger_author_name);
+  const summaryCount = coalesced.length ? coalesced.length + 1 : legacy?.count;
+  const summaryEvent = `${summaryAuthor ? `${summaryAuthor} ` : ''}${summaryCount ? `等 ${summaryCount} 条新评论` : '新评论'}`;
   const lines = [
-    `[Multica follow-up] ${title}`,
+    summaryLine('follow-up', issue?.identifier, summaryEvent, legacy ? legacy.content : task.trigger_comment_content),
+    `卡片：${title}`,
     `Requested by: ${author} · Task ID: ${taskId}`,
     '',
     `${author} left a NEW COMMENT on this issue. Reply to THIS comment — do not treat the original issue text below as the request:`,
@@ -217,7 +260,6 @@ function buildFollowUpCard(task, issue, context, { clip, clipList }) {
       `Comment ID: ${triggerCommentId}. To post a comment in this thread as yourself while this task is live: node ${shellQuote(MULTICA_CLI_PATH)} issue comment add ${shellQuote(issueRef)} --task ${shellQuote(taskId)} --parent ${shellQuote(triggerCommentId)} --content "<text>"`,
     );
   }
-  const coalesced = Array.isArray(task.coalesced_comments) ? task.coalesced_comments : [];
   if (coalesced.length) {
     lines.push('', `This run also covers ${coalesced.length} earlier comment(s) posted before it started — address them too:`);
     // Kept in the server's order: the earliest comments that fit stay.
@@ -264,8 +306,10 @@ function buildNewTaskCard(task, issue, context, { clip }) {
   const handoff = sanitizeExternalText(task.handoff_note || '').trim();
   const issueRef = sanitizeExternalText(issue?.identifier || task.issue_id || '');
   const shown = clip('description', description, issueRef ? cliCommand('issue get', shellQuote(issueRef), '--output json') : '');
+  const summaryInitiator = summaryText(task.attribution?.initiator?.name);
   const lines = [
-    `[Multica task] ${title}`,
+    summaryLine('task', issue?.identifier, summaryInitiator ? `${summaryInitiator} 派来新任务` : '新任务', issue?.title || task.thread_name),
+    `卡片：${title}`,
     `${initiator ? `Requested by: ${initiator} · ` : ''}Task ID: ${taskId}`,
     '',
     shown.text || '(No description; use the title as the task request.)',
@@ -286,8 +330,12 @@ export function buildChatCard(task, context, { budget = CARD_BYTE_BUDGET } = {})
 function buildChatCardLines(task, context, { clip }) {
   const message = clip('chat_message', sanitizeExternalText(task.chat_message || '(empty message)'),
     cliCommand('chat history', '--task', shellQuote(sanitizeExternalText(task.id)), '--output json'));
+  const attachments = taskAttachments(task);
+  const excerpt = summaryText(task.chat_message) || (attachments.length ? `[附件] ${attachments.length} 个` : '');
+  const subject = summaryText(task.thread_name, 20);
   const lines = [
-    `[Multica chat] ${sanitizeExternalText(task.thread_name || '(new conversation)')}`,
+    summaryLine('chat', subject && !excerpt.startsWith(summaryText(task.thread_name)) ? subject : '', '新消息', excerpt),
+    `会话：${sanitizeExternalText(task.thread_name || '(new conversation)')}`,
     `Session ID: ${sanitizeExternalText(task.chat_session_id)} · Task ID: ${sanitizeExternalText(task.id)}`,
     '',
     message.text,

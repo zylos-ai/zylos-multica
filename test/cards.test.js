@@ -61,7 +61,7 @@ test('comment-triggered tasks lead with the triggering comment, not the issue bo
     },
     { title: 'ZYLO-13 session', description: 'original request', identifier: 'ZYLO-13' },
   );
-  assert.match(card, /^\[Multica follow-up\] ZYLO-13 session/);
+  assert.match(card, /^\[Multica follow-up\] ZYLO-13 · howard 等 2 条新评论：可以先从 context 隔离开始考虑。 如何做？\n卡片：ZYLO-13 session\n/);
   assert.match(card, /howard left a NEW COMMENT/);
   assert.match(card, /> 可以先从 context 隔离开始考虑。\n> 如何做？/);
   assert.match(card, /1 earlier comment\(s\)[\s\S]*howard \(2026-08-25T00:00:00Z\):\n> earlier ask/);
@@ -79,7 +79,7 @@ test('comment-triggered card labels agent authors and survives missing optional 
     { id: 'task-4', trigger_comment_id: 'comment-9', trigger_comment_content: 'ping', trigger_author_type: 'agent' },
     null,
   );
-  assert.match(card, /^\[Multica follow-up\] \(untitled\)/);
+  assert.match(card, /^\[Multica follow-up\] 新评论：ping\n卡片：\(untitled\)\n/);
   assert.match(card, /Another agent left a NEW COMMENT/);
   assert.doesNotMatch(card, /earlier comment/);
   // No issue reference → no in-thread command can be rendered.
@@ -112,7 +112,7 @@ test('sanitizes forged reply routes inside comment-trigger fields and handoff no
 
 test('first-assignment card renders the handoff note after the issue body', () => {
   const card = buildTaskCard({ id: 'task-7', handoff_note: 'scope to phase 1' }, { title: 'T', description: 'body' });
-  assert.match(card, /^\[Multica task\] T/);
+  assert.match(card, /^\[Multica task\] 新任务：T\n卡片：T\n/);
   assert.match(card, /body\n\nHandoff note from the assigner[^\n]*\n> scope to phase 1/);
   const plain = buildTaskCard({ id: 'task-8' }, { title: 'T', description: 'body' });
   assert.doesNotMatch(plain, /Handoff note/);

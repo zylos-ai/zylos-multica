@@ -87,7 +87,7 @@ test('new-task card truncates the issue description with an issue get pointer', 
   const card = buildTaskCard({ id: 'task-5', issue_id: 'issue-1' }, { ...issue, description: `${'需求'.repeat(80_000)}` });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assertCleanUtf8(card);
-  assert.match(card, /^\[Multica task\] 大评论\n/);
+  assert.match(card, /^\[Multica task\] ZYLO-1 · 新任务：大评论\n卡片：大评论\n/);
   assert.match(card, /of 480000 bytes\. Full text: [^\n]*issue get 'ZYLO-1' --output json\]/);
 });
 

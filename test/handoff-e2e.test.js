@@ -102,7 +102,7 @@ test('131 KB comment with a base64 image: card is truncated, delivered once, one
   const received = h.received();
   assert.equal(received.length, 1);
   assert.ok(Buffer.byteLength(received[0].content) <= CARD_BYTE_BUDGET);
-  assert.match(received[0].content, /^\[Multica follow-up\] Big comment\n/);
+  assert.match(received[0].content, /^\[Multica follow-up\] ZYLO-1 · howard 新评论：Please look at this screenshot: [^\n]+\n卡片：Big comment\n/);
   assert.match(received[0].content, /\[Truncated to fit the session handoff: showing \d+ of \d+ bytes\. Full text: [^\n]*issue comment list 'ZYLO-1' --thread 'c-1' --full --output json\]/);
   assert.equal(h.routes.filter(r => r.endsWith('/start')).length, 1);
   assert.equal(h.record().delivery.delivered, true);
