@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-11
+
+### Changed
+
+- The first line of every task, follow-up and chat card is now a short,
+  readable summary, so the Dashboard's recent-messages preview shows which
+  card it is, who acted and how the text begins instead of only
+  "[Multica follow-up] <title>". New tasks show the issue key, initiator and
+  title opening; follow-ups show the issue key, latest author and comment
+  opening, and for several comments delivered together "<author> 等 N 条新评论";
+  chats show the conversation name (at most 20 characters, omitted when the
+  message starts with it) and the message opening. Mention links appear as
+  `@Name`. The full original title follows on the second line, and the rest of
+  the card is unchanged (#58).
+- `npm test` runs the `test/*.test.js` files through a small runner that works
+  on Node 20 and no longer picks up fixtures or helper scripts (#58).
+
 ## [0.6.2] - 2026-11-11
 
 ### Fixed
