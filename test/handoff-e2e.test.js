@@ -113,7 +113,11 @@ test('131 KB comment with a base64 image: card is truncated, delivered once, one
 // Boundary: a real E2BIG through the bridge's C4 path into the dispatcher's failure record and log.
 test('an oversize card that cannot be truncated logs E2BIG once with stage, never the card or secrets', async t => {
   // Titles are server metadata and are not truncated, so this card still exceeds the argv limit.
-  const title = `T${'标题'.repeat(25_000)} ${PAT} ${CLAIM}`;
+  // The spawn must fail on every CI platform: Linux rejects any single argument
+  // of 128 KiB or more (MAX_ARG_STRLEN); macOS has no per-argument limit, only
+  // about 1 MiB for argv and environment together (kern.argmax). A ~1.5 MB title
+  // is over both, so both fail with a real spawn E2BIG.
+  const title = `T${'标题'.repeat(250_000)} ${PAT} ${CLAIM}`;
   const h = harness(t, { comment: 'short', title });
   await h.bridge.tick();
   await h.settle(() => h.logs.some(line => line.includes('task handoff deferred')));
