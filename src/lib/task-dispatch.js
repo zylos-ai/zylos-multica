@@ -68,6 +68,8 @@ export function createTaskDispatcher(config, {
       record = await state.reconcile(record.task_id, { generation: record.generation, replay: true });
       return;
     }
+    if (record.cancellation_notice) return;
+    if (entry.issue) record = await state.captureIssueAssignment(record.task_id, record.generation, entry.issue);
     const decided = entry.handoff_failure?.fail_reason;
     if (decided && record.execution.quiesced && !record.execution.accepted && record.start_confirmed) {
       // The bound already decided to fail this task and stopped admission, but
@@ -95,11 +97,12 @@ export function createTaskDispatcher(config, {
     progress.stage = 'start';
     await state.start(record.task_id, entry.generation);
     record = state.get(record.task_id);
-    if (record.execution.accepted) return;
+    if (record.execution.accepted || record.cancellation_notice) return;
     progress.stage = 'deliver';
-    if (!await deliver(record.delivery, entry.task)) throw coded('C4 delivery unconfirmed', 'C4_DELIVERY_UNCONFIRMED');
+    const receipt = await deliver(record.delivery, entry.task);
+    if (!receipt) throw coded('C4 delivery unconfirmed', 'C4_DELIVERY_UNCONFIRMED');
     progress.stage = 'mark_delivered';
-    await state.markDelivered(record.task_id, entry.generation);
+    await state.markDelivered(record.task_id, entry.generation, { scheduled: receipt?.scheduled });
   }
   // A pending report keeps reconciling on later ticks through the report path.
   const reportOutcome = result => result?.report?.state === 'confirmed' ? 'reported_fail' : 'fail_report_pending';

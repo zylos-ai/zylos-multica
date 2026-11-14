@@ -10,6 +10,7 @@ import { storeTaskAttachments } from './lib/attachments.js';
 import { buildChatCard, buildTaskCard, futureDueDate } from './lib/cards.js';
 import { createIssue } from './lib/business-cli.js';
 import { createTaskState } from './lib/task-state.js';
+import { createTaskCancellationMonitor } from './lib/task-cancellation.js';
 import { createTaskDispatcher } from './lib/task-dispatch.js';
 import { DATA_DIR, getConfig, persistWorkspaceSlugMigration, stopWatching, watchConfig } from './lib/config.js';
 import { multicaRequest } from './lib/multica-api.js';
@@ -118,6 +119,9 @@ export function createBridge(initialConfig, dependencies = {}) {
   let config = initialConfig;
   let runtimeId;
   let dispatcher;
+  let taskState;
+  let cancellationMonitor;
+  let cancellationCheck;
   let backoffIndex = -1;
   let stopped = false;
   let wakeSleep;
@@ -349,7 +353,7 @@ export function createBridge(initialConfig, dependencies = {}) {
 
   function taskDispatcher() {
     if (dispatcher) return dispatcher;
-    const state = (dependencies.createTaskState ?? createTaskState)(config, { request });
+    const state = getTaskState();
     const pick = (value, fields) => Object.fromEntries(fields.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
     dispatcher = createTaskDispatcher(config, {
       state, request, log,
@@ -365,7 +369,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
         const safeTask = pick(task, ['id', 'kind', 'workspace_id', 'agent_id', 'runtime_id', 'dispatched_at', 'issue_id', 'chat_session_id', 'thread_name', 'chat_message', 'chat_message_attachments', 'trigger_comment_id', 'trigger_comment_content', 'trigger_author_name', 'trigger_author_type', 'coalesced_comments', 'new_comment_count', 'handoff_note', 'attribution', 'is_leader_task', 'repos', 'project_resources', 'prior_work_dir', 'work_dir', 'relative_work_dir', 'branch_name']);
         const dueAt = futureDueDate(issue, now());
-        return { task: safeTask, context, issue: pick(issue, ['id', 'identifier', 'title', 'description', 'due_at', 'attachments']), ...(dueAt ? { dueAt: dueAt.toISOString() } : {}) };
+        return { task: safeTask, context, issue: pick(issue, ['id', 'identifier', 'title', 'description', 'due_at', 'attachments', 'assignee_type', 'assignee_id']), ...(dueAt ? { dueAt: dueAt.toISOString() } : {}) };
       },
       render: entry => {
         const routed = { ...entry.task, execution_generation: entry.generation, execution_endpoint: entry.endpoint };
@@ -373,16 +377,36 @@ export function createBridge(initialConfig, dependencies = {}) {
       },
       deliver: async (delivery, task) => {
         if (delivery.dueAt && Date.parse(delivery.dueAt) > now()) {
-          if (await scheduleDelivery(delivery.content, { ...task, reply_endpoint: delivery.endpoint }, new Date(delivery.dueAt))) return true;
+          if (await scheduleDelivery(delivery.content, { ...task, reply_endpoint: delivery.endpoint }, new Date(delivery.dueAt))) return { scheduled: true };
         }
         const result = await deliverToC4Result(delivery.content, delivery.endpoint);
         if (!result.ok) {
           throw Object.assign(new Error(`C4 delivery failed${result.failure.error ? `: ${result.failure.error}` : ''}`), { code: result.failure.code });
         }
-        return true;
+        return { scheduled: false };
       },
     });
     return dispatcher;
+  }
+
+  function getTaskState() {
+    return taskState ??= (dependencies.createTaskState ?? createTaskState)(config, { request, log });
+  }
+
+  async function checkTaskCancellations() {
+    if (stopped) return;
+    // Avoid creating empty state for installations that have no bound tasks.
+    if (!taskState && !fs.existsSync(path.join(DATA_DIR, 'task-state'))) return;
+    try {
+      cancellationMonitor ??= createTaskCancellationMonitor(config, {
+        state: getTaskState(), request, deliver: deliverToC4, log,
+        now: dependencies.monotonicNow,
+        wallNow: now,
+      });
+      await cancellationMonitor.poll();
+    } catch {
+      log('WARN', 'task cancellation state unavailable; continuing to claim');
+    }
   }
 
   async function handleTask(task) {
@@ -510,6 +534,9 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
     await reconcileScheduledTasks();
+    // A finite sweep must not delay heartbeats/claims behind slow status reads.
+    // Track completion across reloads for shutdown; only the monitor gates polls.
+    cancellationCheck = Promise.all([cancellationCheck, checkTaskCancellations()]).then(() => undefined);
     if (dispatcher || fs.existsSync(dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'))) taskDispatcher().resume();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
       daemon_id: config.daemon_id,
@@ -523,7 +550,9 @@ export function createBridge(initialConfig, dependencies = {}) {
   }
 
   function updateConfig(nextConfig) {
+    cancellationMonitor?.stop();
     dispatcher?.stop(); dispatcher = undefined;
+    taskState = undefined; cancellationMonitor = undefined;
     config = nextConfig;
     runtimeId = undefined;
     // The socket may authenticate against stale credentials; drop it now and
@@ -534,6 +563,7 @@ export function createBridge(initialConfig, dependencies = {}) {
 
   function stop() {
     stopped = true;
+    cancellationMonitor?.stop();
     dispatcher?.stop();
     wakeup.stop();
     wakeSleep?.();
@@ -575,10 +605,13 @@ export function createBridge(initialConfig, dependencies = {}) {
       if (backoffIndex >= 0 || !pendingWakeup) await sleep(seconds * 1000);
       pendingWakeup = false;
     }
+    await cancellationCheck;
   }
 
   return {
     deliverToC4,
+    checkTaskCancellations,
+    async drainCancellationChecks() { await cancellationCheck; },
     handleTask,
     handleQuickCreate,
     listScheduledTasks,

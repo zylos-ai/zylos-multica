@@ -172,6 +172,57 @@ See [Agent-owned resources](docs/agent-owned-resources.md) for migration, old qu
 cards, interrupted preparation, cancellation limits and Piper B1/C2 continuation.
 Runtime records and workspace materials survive upgrades; official Server is unchanged.
 
+Cancellation and assignment-change notices arrive at the frozen task address:
+the issue/chat session for scoped cards, or the original total session for older
+cards. If you reassigned this issue yourself during this task, you may ignore
+its reassignment notice and continue following the issue instructions.
+Otherwise, stop that task's commands, children and edits, preserve its work, then run
+the original `task.js quiesce <task@generation> --stopped`. A notice does not
+authorize changing the issue, posting a business result, or taking over another
+assignment. The bridge does not kill processes or cancel platform tasks.
+After stopping, use `report.js fail <original address> <stopped-work explanation>`
+to close the run that issue cancellation or reassignment may leave running.
+An explicitly cancelled task can reconcile as `superseded`; that is an
+authoritative terminal result, not permission to retry or report success.
+If a notice explicitly says the task no longer exists, `report.js fail` may
+remain `pending_unknown` because start/history returns 404. For that missing
+task this is the final local state; do not request manual intervention or retry.
+Once a notice attempt is reserved, the original card is no longer redelivered
+and new `begin` admission is blocked; an already running command still requires
+the Agent to stop it and acknowledge that stop.
+
+The bridge checks delivered, unstopped tasks without a frozen report at most
+once every 30 seconds on its existing loop (longer configured poll intervals or
+request failures delay discovery). Each sweep costs one task-status GET per
+eligible task and at most one issue GET per distinct associated issue; completed
+and failed tasks need no issue read. A task-status 404 means the task was
+removed and receives the same one-attempt cancellation notice; other lookup
+errors are not cancellation signals. Assignment changes apply only when the
+delivery baseline assigned this executing Agent, or when a leader task's
+frozen squad leader is this Agent. Independent direct mentions keep running.
+Capturing a leader-task squad baseline adds one squad GET, with identity and
+workspace validation; later checks do not resolve its leader again. If that
+lookup fails, the baseline is saved without leader identity, a typed WARN is
+logged, and delivery continues. That task will not detect reassignment; task
+and issue cancellation checks still apply. Older
+records without a baseline establish it on their first successful read and
+cannot detect an earlier reassignment. Older squad records without frozen
+leader provenance do not infer assignment ownership.
+The pinned platform claim omits the task's squad ID. If the same Agent leads
+two squads and both squads participate on this issue, the leader-role and
+baseline-leader checks cannot distinguish which squad caused the task; such a
+task may receive a reassignment notice even when it was an independent squad
+mention.
+
+One notification attempt is reserved durably before C4 is invoked. Restart,
+failure or an uncertain C4 result never repeats that attempt. A crash between
+reservation and invocation can lose the notice; C4 provides no idempotency key.
+Logs distinguish accepted C4 input from an unconfirmed attempt. C4 acceptance is
+not proof that the Agent stopped.
+Future scheduled handoffs are checked once accepted or due; a failed schedule
+that falls back to immediate C4 input is checked immediately. Older receipts
+without the handoff marker use the conservative accepted-or-due boundary.
+
 ## Task-scoped context
 
 When a task card includes a context index, read that index and its `manifest.json`

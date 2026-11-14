@@ -37,7 +37,7 @@ test('claim-aware bridge delivers Agent-owned resources after exact start withou
   let state;
   let deliveryArgs;
   const request = async (_config, method, route, body) => {
-    if (route === '/api/issues/11111111-1111-4111-8111-111111111111') return { id: '11111111-1111-4111-8111-111111111111', title: 'Normal task', auth_token: 'private-issue-token' };
+    if (route === '/api/issues/11111111-1111-4111-8111-111111111111') return { id: '11111111-1111-4111-8111-111111111111', title: 'Normal task', auth_token: 'private-issue-token', assignee_type: 'agent', assignee_id: '22222222-2222-4222-8222-222222222222' };
     assert.equal(method, 'POST');
     if (route.endsWith('/prepare-lease')) {
       events.push('lease');
@@ -75,6 +75,8 @@ test('claim-aware bridge delivers Agent-owned resources after exact start withou
   }
   const record = state.get(task.id);
   assert.equal(record.delivery?.delivered, true);
+  assert.equal(record.delivery.scheduled, false);
+  assert.equal(record.issue_assignment.id, '22222222-2222-4222-8222-222222222222');
   assert.deepEqual(events, ['start', 'deliver']);
   const endpoint = `${task.id}@${record.generation}|issue:${task.issue_id}`;
   assert.equal(deliveryArgs[deliveryArgs.indexOf('--endpoint') + 1], endpoint);
