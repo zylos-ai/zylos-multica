@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
+### Changed
+
+- Each Multica issue now runs in its own session group,
+  `multica:issue-<issue_id>`, and later comments on the same card go back to
+  that session; each chat goes to `multica:chat-<chat_session_id>`. The
+  bridge passes `--session-group` only when the installed Core supports it;
+  an address it cannot resolve fails instead of falling back to the shared
+  group (#68).
+- New task cards describe a separate git worktree per card, restoring
+  `prior_work_dir`, and cleaning the worktree up once the card is done and its
+  PR merged (#68).
+
+### Compatibility
+
+- Cards claimed before the upgrade keep their old address and finish in the
+  shared `multica` session. Scheduled-task reconciliation resolves the task ID
+  first. The concurrency limit is unchanged (#68).
+
 ## [0.6.3] - 2026-11-11
 
 ### Changed
