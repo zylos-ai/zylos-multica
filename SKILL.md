@@ -174,7 +174,9 @@ Runtime records and workspace materials survive upgrades; official Server is unc
 
 Cancellation and assignment-change notices arrive at the frozen task address:
 the issue/chat session for scoped cards, or the original total session for older
-cards. Stop that task's commands, children and edits, preserve its work, then run
+cards. If you reassigned this issue yourself during this task, you may ignore
+its reassignment notice and continue following the issue instructions.
+Otherwise, stop that task's commands, children and edits, preserve its work, then run
 the original `task.js quiesce <task@generation> --stopped`. A notice does not
 authorize changing the issue, posting a business result, or taking over another
 assignment. The bridge does not kill processes or cancel platform tasks.
@@ -182,6 +184,9 @@ After stopping, use `report.js fail <original address> <stopped-work explanation
 to close the run that issue cancellation or reassignment may leave running.
 An explicitly cancelled task can reconcile as `superseded`; that is an
 authoritative terminal result, not permission to retry or report success.
+If a notice explicitly says the task no longer exists, `report.js fail` may
+remain `pending_unknown` because start/history returns 404. For that missing
+task this is the final local state; do not request manual intervention or retry.
 Once a notice attempt is reserved, the original card is no longer redelivered
 and new `begin` admission is blocked; an already running command still requires
 the Agent to stop it and acknowledge that stop.
@@ -196,7 +201,10 @@ errors are not cancellation signals. Assignment changes apply only when the
 delivery baseline assigned this executing Agent, or when a leader task's
 frozen squad leader is this Agent. Independent direct mentions keep running.
 Capturing a leader-task squad baseline adds one squad GET, with identity and
-workspace validation; later checks do not resolve its leader again. Older
+workspace validation; later checks do not resolve its leader again. If that
+lookup fails, the baseline is saved without leader identity, a typed WARN is
+logged, and delivery continues. That task will not detect reassignment; task
+and issue cancellation checks still apply. Older
 records without a baseline establish it on their first successful read and
 cannot detect an earlier reassignment. Older squad records without frozen
 leader provenance do not infer assignment ownership.

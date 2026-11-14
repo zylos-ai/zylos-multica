@@ -105,6 +105,8 @@ test('assignment-owned tasks notify on changed type, id or removal', async t => 
   type.issue({ ...issue, assignee_type: 'member' }); await type.makeMonitor().poll();
   assert.equal(type.notices.length, 1);
   assert.equal(type.state.get(type.task.id).cancellation_notice.reason, 'issue_reassigned');
+  assert.match(type.notices[0].content, /If you reassigned this issue yourself during this task, you may ignore this notice and continue following the issue instructions/);
+  assert.match(type.notices[0].content, /Otherwise, stop work/);
   const other = await fixture(t);
   other.issue({ ...issue, assignee_id: '44444444-4444-4444-8444-444444444444' }); await other.makeMonitor().poll();
   assert.equal(other.notices.length, 1);
@@ -155,13 +157,50 @@ test('squad reassignment requires a frozen leader-task baseline belonging to thi
   assert.equal(legacy.notices.length, 0, 'legacy records cannot reconstruct squad ownership');
 });
 
-test('squad baseline rejects wrong identity, workspace or malformed leader', async t => {
+test('unverifiable squad leaders leave a frozen baseline without ownership and log a warning', async t => {
   const squadId = '77777777-7777-4777-8777-777777777777';
   for (const change of [{ id: issueId }, { workspace_id: 'another-workspace' }, { leader_id: 'invalid' }]) {
     const f = await fixture(t, { baseline: false, taskFields: { is_leader_task: true } });
-    const state = createTaskState(config, { ...f.options, request: async () => ({ id: squadId, workspace_id: config.workspace_id, leader_id: issue.assignee_id, ...change }) });
-    await assert.rejects(state.captureIssueAssignment(f.task.id, f.generation, { ...issue, assignee_type: 'squad', assignee_id: squadId }), /invalid squad/);
-    assert.equal(state.get(f.task.id).issue_assignment, undefined);
+    const state = createTaskState(config, { ...f.options, log: (...args) => f.logs.push(args), request: async () => ({ id: squadId, workspace_id: config.workspace_id, leader_id: issue.assignee_id, ...change }) });
+    await state.captureIssueAssignment(f.task.id, f.generation, { ...issue, assignee_type: 'squad', assignee_id: squadId });
+    assert.deepEqual(state.get(f.task.id).issue_assignment, { type: 'squad', id: squadId });
+    assert.equal(f.logs.length, 1);
+    assert.equal(f.logs[0][0], 'WARN');
+    assert.equal(f.logs[0][2].error_type, 'request_or_response');
+  }
+});
+
+test('squad lookup failure does not prevent delivery or invent reassignment ownership', async t => {
+  const squadId = '77777777-7777-4777-8777-777777777777';
+  for (const error of [Object.assign(new Error('squad unavailable'), { status: 503 }),
+    Object.assign(new Error('squad timeout'), { name: 'TimeoutError' })]) {
+    const f = await fixture(t, { baseline: false, delivered: false, accepted: false, taskFields: { is_leader_task: true } });
+    let reads = 0;
+    const request = async (...args) => {
+      if (args[2].startsWith('/api/squads/')) { reads++; throw error; }
+      return f.options.request(...args);
+    };
+    const state = createTaskState(config, { ...f.options, request, log: (...args) => f.logs.push(args) });
+    let deliveries = 0;
+    const dispatcher = createTaskDispatcher(config, { state, root: path.join(f.root, 'dispatch'),
+      snapshot: async () => ({ task: f.task, issue: { ...issue, assignee_type: 'squad', assignee_id: squadId } }),
+      render: () => 'card', deliver: async () => { deliveries++; return true; } });
+    t.after(() => dispatcher.stop());
+    await dispatcher.enqueue(f.task); await dispatcher.drain();
+    assert.equal(deliveries, 1);
+    assert.equal(state.get(f.task.id).delivery.delivered, true);
+    assert.deepEqual(state.get(f.task.id).issue_assignment, { type: 'squad', id: squadId });
+    assert.equal(f.logs.length, 1);
+    assert.equal(f.logs[0][0], 'WARN');
+    assert.equal(f.logs[0][2].error_type, error.status ? 'http' : 'timeout');
+    assert.equal(f.logs[0][2].http_status, error.status);
+    await state.captureIssueAssignment(f.task.id, f.generation, { ...issue, assignee_type: 'squad', assignee_id: squadId });
+    assert.equal(reads, 1);
+    f.issue({ ...issue });
+    const monitor = f.makeMonitor({ state }); await monitor.poll();
+    assert.equal(f.notices.length, 0);
+    f.advance(); f.status('cancelled'); await monitor.poll();
+    assert.equal(f.notices.length, 1, 'terminal task cancellation still applies');
   }
 });
 
@@ -177,6 +216,8 @@ test('a missing task status sends one durable cancellation notice and stops futu
   f.advance(); await f.makeMonitor({ request, state: createTaskState(config, f.options) }).poll();
   assert.equal(queries, 1);
   assert.equal(f.notices.length, 1);
+  assert.match(f.notices[0].content, /This task no longer exists/);
+  assert.match(f.notices[0].content, /pending_unknown.*final local state; no manual intervention or retry is needed/);
   assert.equal(f.state.get(f.task.id).cancellation_notice.reason, 'task_cancelled');
   assert.equal(f.logs.some(([level]) => level === 'WARN'), false);
 });

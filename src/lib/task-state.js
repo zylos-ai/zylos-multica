@@ -119,6 +119,7 @@ export function createTaskState(config, options = {}) {
   const write = options.write ?? atomicTaskWrite;
   const removeToken = options.removeTaskToken ?? removeTaskToken;
   const now = options.now ?? Date.now;
+  const log = options.log ?? (() => {});
   const origin = new URL(config.base_url).origin;
   const workspace = string(config.workspace_id, 'workspace_id');
   privateDir(root);
@@ -296,10 +297,19 @@ export function createTaskState(config, options = {}) {
         const assignment = issueAssignment(issue);
         if (record.issue_id !== issue?.id || !assignment || record.issue_assignment) return record;
         if (assignment.type === 'squad' && record.is_leader_task === true) {
-          const squad = await request(config, 'GET', `/api/squads/${encodeURIComponent(assignment.id)}`, undefined, { workspaceHeader: true, timeoutMs: 5000 });
-          const leader = issueAssignment({ assignee_type: 'agent', assignee_id: squad?.leader_id });
-          if (squad?.id !== assignment.id || squad.workspace_id !== workspace || !leader) throw new Error('invalid squad assignment leader');
-          assignment.leader_id = leader.id;
+          try {
+            const squad = await request(config, 'GET', `/api/squads/${encodeURIComponent(assignment.id)}`, undefined, { workspaceHeader: true, timeoutMs: 5000 });
+            const leader = issueAssignment({ assignee_type: 'agent', assignee_id: squad?.leader_id });
+            if (squad?.id !== assignment.id || squad.workspace_id !== workspace || !leader) throw new Error('invalid squad assignment leader');
+            assignment.leader_id = leader.id;
+          } catch (error) {
+            log('WARN', 'squad assignment leader unavailable; reassignment checks disabled for this task', {
+              task_id: record.task_id,
+              error_type: Number.isInteger(error.status) ? 'http'
+                : ['TimeoutError', 'AbortError'].includes(error.name) || error.code === 'ETIMEDOUT' ? 'timeout' : 'request_or_response',
+              ...(Number.isInteger(error.status) ? { http_status: error.status } : {}),
+            });
+          }
         }
         record.issue_assignment = assignment;
         return save(record);

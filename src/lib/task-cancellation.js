@@ -30,12 +30,14 @@ export function createTaskCancellationMonitor(config, {
         && record.delivery.dueAt && Date.parse(record.delivery.dueAt) > wallNow()) continue;
       try {
         let remote;
+        let taskMissing = false;
         try {
           remote = await request(config, 'GET', `/api/daemon/tasks/${encodeURIComponent(record.task_id)}/status`, undefined, { timeoutMs: 5000 });
         } catch (error) {
           // Deleting an issue also deletes its task rows. Only this status
           // endpoint's 404 is an authoritative stop signal.
           if (error.status !== 404) throw error;
+          taskMissing = true;
           remote = { status: 'cancelled' };
         }
         if (stopped) return;
@@ -68,8 +70,12 @@ export function createTaskCancellationMonitor(config, {
         if (!reason) continue;
         if (stopped) return;
         const identity = sanitizeExternalText(`Task ID: ${record.task_id}${record.issue_id ? ` · Issue ID: ${record.issue_id}` : record.chat_session_id ? ` · Chat ID: ${record.chat_session_id}` : ''}`);
+        const action = reason === 'issue_reassigned'
+          ? 'If you reassigned this issue yourself during this task, you may ignore this notice and continue following the issue instructions. Otherwise, stop work for this task and stop its task processes.'
+          : 'Stop work for this task and stop its task processes.';
+        const missing = taskMissing ? ' This task no longer exists. If report.js fail remains pending_unknown because the task is missing, that is the final local state; no manual intervention or retry is needed.' : '';
         const notice = await state.notifyCancellation(record.task_id, record.generation, reason, endpoint => deliver(
-            `[Multica task notice] ${identity}\n${REASONS[reason]} Stop work for this task and stop its task processes. Acknowledge stopped work with task.js quiesce using this task’s original address and --stopped. Then use report.js fail with the same address and a stopped-work explanation to close this run. An already cancelled platform task may reconcile as superseded; do not retry it or report success. This notice does not authorize changing the issue, posting a business result, or taking over another assignment.`, endpoint), () => !stopped);
+            `[Multica task notice] ${identity}\n${REASONS[reason]} ${action} Acknowledge stopped work with task.js quiesce using this task’s original address and --stopped. Then use report.js fail with the same address and a stopped-work explanation to close this run. An already cancelled platform task may reconcile as superseded; do not retry it or report success.${missing} This notice does not authorize changing the issue, posting a business result, or taking over another assignment.`, endpoint), () => !stopped);
         if (notice) log(notice.outcome === 'accepted' ? 'INFO' : 'WARN', 'task cancellation notification attempted', {
           task_id: record.task_id, reason, outcome: notice.outcome,
         });

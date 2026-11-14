@@ -390,7 +390,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   }
 
   function getTaskState() {
-    return taskState ??= (dependencies.createTaskState ?? createTaskState)(config, { request });
+    return taskState ??= (dependencies.createTaskState ?? createTaskState)(config, { request, log });
   }
 
   async function checkTaskCancellations() {
