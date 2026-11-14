@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-15
+
+### Added
+
+- When a task the Agent is working on is cancelled, its card is deleted, or
+  the card is reassigned away from it, the bridge sends one stop notice to the
+  task's original session. The Agent stops the work, quiesces and reports
+  failure through the original address. The bridge does not kill processes,
+  cancel platform tasks or edit cards. A reassignment the Agent made itself
+  as part of the card can be ignored, and separate @mention tasks keep running
+  after a reassignment (#70).
+
+### Notes
+
+- Detection reuses the existing poll tick (at most one in-flight check, every
+  30 s or longer); a task that was cancelled or reassigned may take that long
+  to be noticed. The notice is one persisted send attempt, not exactly-once
+  delivery (#70).
+
 ## [0.7.0] - 2026-11-14
 
 ### Changed
