@@ -16,6 +16,18 @@ const completeFields = { output: '', pr_url: '', session_id: '', work_dir: '', d
 // Fail responses do not expose session mutation fields; do not accept writes
 // whose outcome cannot be verified through the pinned public readback API.
 const failFields = { error: '', failure_reason: '', work_dir: '', durable_work_dir: '', branch_name: '' };
+export function taskNeedsCancellationCheck(record, daemonId) {
+  return record.daemon_id === daemonId && record.delivery?.delivered === true
+    && !record.report && !record.execution.quiesced && !record.cancellation_notice;
+}
+export function issueAssignment(issue) {
+  if (!issue || !Object.hasOwn(issue, 'assignee_type') || !Object.hasOwn(issue, 'assignee_id')) return null;
+  if (issue.assignee_type === null && issue.assignee_id === null) return { type: null, id: null };
+  if (['agent', 'member', 'squad'].includes(issue.assignee_type)
+    && typeof issue.assignee_id === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issue.assignee_id)) return { type: issue.assignee_type, id: issue.assignee_id };
+  return null;
+}
 function string(value, field) {
   if (typeof value !== 'string' || !value || value.includes('\0') || !value.isWellFormed()) throw new Error(`invalid ${field}`);
   return value;
@@ -278,6 +290,34 @@ export function createTaskState(config, options = {}) {
   }
   return {
     root, get, assertCurrent,
+    async captureIssueAssignment(taskId, generation, issue) {
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        const assignment = issueAssignment(issue);
+        if (record.issue_id !== issue?.id || !assignment || record.issue_assignment) return record;
+        record.issue_assignment = assignment;
+        return save(record);
+      });
+    },
+    async notifyCancellation(taskId, generation, reason, deliver, isActive = () => true) {
+      if (!['task_cancelled', 'issue_cancelled', 'issue_reassigned'].includes(reason)) throw new Error('invalid cancellation reason');
+      return lock(taskId, async () => {
+        const record = current(taskId, generation);
+        if (!isActive()) return null;
+        if (!taskNeedsCancellationCheck(record, config.daemon_id)) return null;
+        if (!validDeliveryEndpoint(record, record.delivery.endpoint)) throw new Error('invalid cancellation delivery endpoint');
+        // C4 has no idempotency key. Reserve before invoking it: a lost reply
+        // or restart must never cause a second notification attempt.
+        record.cancellation_notice = { reason, attempted_at: now(), outcome: 'unknown' };
+        save(record);
+        let accepted = false;
+        try { accepted = await deliver(record.delivery.endpoint, reason) === true; }
+        catch { /* An uncertain C4 outcome is never retried. */ }
+        record.cancellation_notice.outcome = accepted ? 'accepted' : 'unconfirmed';
+        save(record);
+        return record.cancellation_notice;
+      });
+    },
     list() {
       return fs.readdirSync(root).filter(name => name.endsWith('.json')).map(name => {
         const fd = fs.openSync(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -359,6 +399,7 @@ export function createTaskState(config, options = {}) {
     async start(taskId, generation) {
       return lock(taskId, async () => {
         const record = assertCurrent({ taskId, generation });
+        if (record.cancellation_notice) throw new Error('task has a cancellation notice; stop work');
         try { await startRequest(record); }
         catch (error) { record.start_unknown = true; save(record); throw error; }
         record.start_confirmed = true; record.start_unknown = false;
@@ -405,7 +446,7 @@ export function createTaskState(config, options = {}) {
         const frozen = { content: delivery.content, endpoint: delivery.endpoint };
         if (delivery.dueAt !== undefined) frozen.dueAt = string(delivery.dueAt, 'delivery dueAt');
         if (record.delivery) {
-          const existing = { ...record.delivery }; delete existing.delivered; delete existing.delivered_at;
+          const existing = { ...record.delivery }; delete existing.delivered; delete existing.delivered_at; delete existing.scheduled;
           if (digest(existing) !== digest(frozen)) throw new Error('task delivery conflicts with frozen card');
           return record;
         }
@@ -413,10 +454,14 @@ export function createTaskState(config, options = {}) {
         return save(record);
       });
     },
-    async markDelivered(taskId, generation) {
+    async markDelivered(taskId, generation, { scheduled } = {}) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
         if (!record.delivery) throw new Error('task has no frozen delivery');
+        if (scheduled !== undefined) {
+          if (typeof scheduled !== 'boolean') throw new Error('invalid delivery receipt');
+          record.delivery.scheduled = scheduled;
+        }
         record.delivery.delivered = true; record.delivery.delivered_at = now();
         return save(record);
       });
@@ -424,6 +469,7 @@ export function createTaskState(config, options = {}) {
     async markAccepted(taskId, generation) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
+        if (record.cancellation_notice) throw new Error('task has a cancellation notice; stop work');
         if (record.execution.accepted) return false;
         record.execution.accepted = true; save(record); return true;
       });

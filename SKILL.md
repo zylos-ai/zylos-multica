@@ -172,6 +172,38 @@ See [Agent-owned resources](docs/agent-owned-resources.md) for migration, old qu
 cards, interrupted preparation, cancellation limits and Piper B1/C2 continuation.
 Runtime records and workspace materials survive upgrades; official Server is unchanged.
 
+Cancellation and assignment-change notices arrive at the frozen task address:
+the issue/chat session for scoped cards, or the original total session for older
+cards. Stop that task's commands, children and edits, preserve its work, then run
+the original `task.js quiesce <task@generation> --stopped`. A notice does not
+authorize changing the issue, posting a business result, or taking over another
+assignment. The bridge does not kill processes or cancel platform tasks.
+After stopping, use `report.js fail <original address> <stopped-work explanation>`
+to close the run that issue cancellation or reassignment may leave running.
+An explicitly cancelled task can reconcile as `superseded`; that is an
+authoritative terminal result, not permission to retry or report success.
+Once a notice attempt is reserved, the original card is no longer redelivered
+and new `begin` admission is blocked; an already running command still requires
+the Agent to stop it and acknowledge that stop.
+
+The bridge checks delivered, unstopped tasks without a frozen report at most
+once every 30 seconds on its existing loop (longer configured poll intervals or
+request failures delay discovery). Each sweep costs one task-status GET per
+eligible task and at most one issue GET per distinct associated issue; completed
+and failed tasks need no issue read. It compares assignment with the delivery
+snapshot, not with the executing Agent: explicitly mentioned Agents may differ
+from the assignee. Older records without a baseline establish it on their first
+successful read and cannot detect an earlier reassignment.
+
+One notification attempt is reserved durably before C4 is invoked. Restart,
+failure or an uncertain C4 result never repeats that attempt. A crash between
+reservation and invocation can lose the notice; C4 provides no idempotency key.
+Logs distinguish accepted C4 input from an unconfirmed attempt. C4 acceptance is
+not proof that the Agent stopped.
+Future scheduled handoffs are checked once accepted or due; a failed schedule
+that falls back to immediate C4 input is checked immediately. Older receipts
+without the handoff marker use the conservative accepted-or-due boundary.
+
 ## Task-scoped context
 
 When a task card includes a context index, read that index and its `manifest.json`
