@@ -67,6 +67,31 @@ official core release for scheduler `list --json` due-date reconciliation.
 Older cores keep ordinary Multica delivery available but log a reconciliation
 warning.
 
+## Session groups
+
+Core multi-session mode routes by the immutable reply endpoint, without reading local task state.
+The same parser supplies both inbound `--session-group` and `scripts/session-group.js <endpoint>`.
+
+| Message / endpoint | Component session group (Core adds `multica:`) |
+|---|---|
+| Issue task: `<task>@<generation>\|issue:<issue_id>` (or `<task>\|issue:<issue_id>` for an older server) | `issue-<issue_id>` |
+| Chat task: `<task>@<generation>\|chat:<chat_session_id>` (or `<task>\|chat:<chat_session_id>`) | `chat-<chat_session_id>` |
+| Legacy task: `<task>@<generation>` or `<task>` | empty: overall `multica` session |
+| Quick-create | handled inside the component; no C4 delivery |
+| Future notification unrelated to a specific card or chat | overall `multica` session; define its explicit endpoint rule before adding it |
+| Unrecognized / malformed endpoint | exit 1, no stdout; never guess the overall session |
+
+The receive flag is passed only when installed Core's `c4-receive-options.json` advertises it.
+Single-session Core retains its existing behavior. A Core rejection is never retried without the group.
+Existing cards and scheduler entries keep their original endpoints and finish in the overall session;
+new tasks/comments use typed endpoints. No conversation migration or concurrency-setting change occurs.
+
+Each issue uses its own Git worktree. Resume the platform's `prior_work_dir` when provided,
+after checking that it belongs to the task; otherwise choose an isolated worktree. Once the issue
+is finished **and its PR merged**, remove that issue's worktree under the host's cleanup/consent rules.
+The component does not manage these directories. Chat sessions need no component-specific cleanup;
+Core reclaims idle sessions. Session-memory archiving is a separate Core concern.
+
 ## Reply and task lifecycle
 
 To reply to a Multica card, explicitly execute its attached C4 `reply via:`

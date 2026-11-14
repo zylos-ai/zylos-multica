@@ -19,6 +19,8 @@ import { loadTaskToken, storeTaskToken } from './lib/task-tokens.js';
 import { describeError, errorCode, redactSecrets } from './lib/log-redact.js';
 import { UPSTREAM_VERSION } from './lib/upstream-version.js';
 import { createWakeupChannel } from './lib/wakeup.js';
+import { buildC4ReceiveArgs } from './lib/c4.js';
+import { buildTaskEndpoint, parseTaskEndpoint } from './lib/session-group.js';
 
 const C4_RECEIVE = path.join(os.homedir(), 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SCHEDULER_CLI = path.join(os.homedir(), 'zylos/.claude/skills/scheduler/scripts/cli.js');
@@ -84,11 +86,14 @@ export function selectLatestMulticaSchedulerRows(rows, onInvalidRow = () => {}) 
       continue;
     }
     if (row.type !== 'one-time' || row.reply_channel !== 'multica') continue;
-    const current = latestByTask.get(row.reply_endpoint);
+    let taskId;
+    try { ({ taskId } = parseTaskEndpoint(row.reply_endpoint, { allowLegacy: true })); }
+    catch { onInvalidRow(row, 'invalid Multica reply_endpoint'); continue; }
+    const current = latestByTask.get(taskId);
     const isNewer = !current || row.next_run_at > current.next_run_at;
     const saferTie = current && row.next_run_at === current.next_run_at
       && current.status === 'failed' && row.status !== 'failed';
-    if (isNewer || saferTie) latestByTask.set(row.reply_endpoint, row);
+    if (isNewer || saferTie) latestByTask.set(taskId, row);
   }
   return [...latestByTask.values()];
 }
@@ -167,9 +172,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   }
 
   async function deliverToC4Result(content, endpoint) {
-    const result = await runScript(C4_RECEIVE, [
-      '--channel', 'multica', '--endpoint', String(endpoint), '--json', '--content', content,
-    ]);
+    const result = await runScript(C4_RECEIVE, buildC4ReceiveArgs(content, String(endpoint), C4_RECEIVE));
     if (!result.ok) {
       result.failure = c4Failure(result);
       log('ERROR', 'c4 delivery failed', { endpoint: String(endpoint), ...result.failure });
@@ -187,7 +190,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       '--at', dueAt.toISOString(),
       '--name', `multica-task-${String(task.id)}`,
       '--reply-channel', 'multica',
-      '--reply-endpoint', String(task.reply_endpoint ?? task.id),
+      '--reply-endpoint', String(task.reply_endpoint ?? buildTaskEndpoint(task)),
     ]);
     if (!result.ok) {
       log('ERROR', 'scheduler add failed; falling back to direct C4 delivery', {
@@ -231,10 +234,12 @@ export function createBridge(initialConfig, dependencies = {}) {
     }
     for (const row of rows) {
       if (row.status !== 'failed') continue;
-      const taskId = row.reply_endpoint;
+      let taskId;
       try {
-        if (taskId.includes('@')) {
-          await taskDispatcher().failScheduled(taskId, `scheduler handoff failed: ${String(row.last_error || 'unknown scheduler failure').slice(0, 300)}`);
+        const parsed = parseTaskEndpoint(row.reply_endpoint, { allowLegacy: true });
+        taskId = parsed.taskId;
+        if (parsed.generation) {
+          await taskDispatcher().failScheduled(row.reply_endpoint, `scheduler handoff failed: ${String(row.last_error || 'unknown scheduler failure').slice(0, 300)}`);
           continue;
         }
         const taskStatus = await request(
@@ -363,7 +368,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         return { task: safeTask, context, issue: pick(issue, ['id', 'identifier', 'title', 'description', 'due_at', 'attachments']), ...(dueAt ? { dueAt: dueAt.toISOString() } : {}) };
       },
       render: entry => {
-        const routed = { ...entry.task, execution_generation: entry.generation };
+        const routed = { ...entry.task, execution_generation: entry.generation, execution_endpoint: entry.endpoint };
         return entry.task.chat_session_id ? buildChatCard(routed, entry.context) : buildTaskCard(routed, entry.issue, entry.context);
       },
       deliver: async (delivery, task) => {
@@ -410,7 +415,7 @@ export function createBridge(initialConfig, dependencies = {}) {
         return false;
       }
       (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task);
-      if (!await deliverToC4(buildChatCard(task, context), task.id)) {
+      if (!await deliverToC4(buildChatCard({ ...task, execution_endpoint: buildTaskEndpoint(task) }, context), buildTaskEndpoint(task))) {
         log('WARN', 'chat delivery failed; leaving task dispatched', { task_id: task.id });
         return false;
       }
@@ -451,7 +456,7 @@ export function createBridge(initialConfig, dependencies = {}) {
     // turn into an apparently successful handoff with missing attachments.
     if (!issue) return false;
     (dependencies.storeTaskAttachments ?? storeTaskAttachments)(task, issue);
-    const card = buildTaskCard(task, issue, context);
+    const card = buildTaskCard({ ...task, execution_endpoint: buildTaskEndpoint(task) }, issue, context);
     const dueAt = futureDueDate(issue, now());
     let delivered;
     if (dueAt) {
@@ -460,10 +465,10 @@ export function createBridge(initialConfig, dependencies = {}) {
         delivered = true;
         log('INFO', 'task scheduled', { task_id: task.id, due_at: dueAt.toISOString() });
       } else {
-        delivered = await deliverToC4(card, task.id);
+        delivered = await deliverToC4(card, buildTaskEndpoint(task));
       }
     } else {
-      delivered = await deliverToC4(card, task.id);
+      delivered = await deliverToC4(card, buildTaskEndpoint(task));
     }
     if (!delivered) {
       log('WARN', 'delivery failed; leaving task dispatched for server-side redispatch', { task_id: task.id });

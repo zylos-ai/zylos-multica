@@ -44,7 +44,7 @@ function harness(t, { comment, title = 'Big comment', c4 = 'ok' }) {
   fs.writeFileSync(c4Stub, `const a = process.argv; require('fs').appendFileSync(${JSON.stringify(received)}, JSON.stringify({ endpoint: a[a.indexOf('--endpoint') + 1], content: a[a.indexOf('--content') + 1] }) + '\\n'); ${outcome}`);
   const schedulerStub = path.join(root, 'scheduler.cjs');
   fs.writeFileSync(schedulerStub, `console.log('[]');`);
-  const task = { id: 'task-big', issue_id: 'issue-1', workspace_id: 'ws-1', agent_id: 'agent-1', runtime_id: 'rt-1',
+  const task = { id: 'task-big', issue_id: '11111111-1111-4111-8111-111111111111', workspace_id: 'ws-1', agent_id: 'agent-1', runtime_id: 'rt-1',
     dispatched_at: '2026-11-08T01:02:03.123456Z', start_claim_supported: true, auth_token: CLAIM,
     trigger_comment_id: 'c-1', trigger_comment_content: comment, trigger_author_name: 'howard', trigger_author_type: 'member' };
   let claimed = false;
@@ -55,7 +55,7 @@ function harness(t, { comment, title = 'Big comment', c4 = 'ok' }) {
     if (route === '/api/daemon/register') return { runtimes: [{ id: 'rt-1', type: 'zylos' }] };
     if (route === '/api/daemon/heartbeat') return {};
     if (route === '/api/daemon/tasks/claim') { if (claimed) return { tasks: [] }; claimed = true; return { tasks: [task] }; }
-    if (route === '/api/issues/issue-1') return { id: 'issue-1', identifier: 'ZYLO-1', title, description: 'desc' };
+    if (route === '/api/issues/11111111-1111-4111-8111-111111111111') return { id: '11111111-1111-4111-8111-111111111111', identifier: 'ZYLO-1', title, description: 'desc' };
     if (route === `/api/daemon/tasks/${task.id}/start`) return { ...task, status: 'running' };
     throw Object.assign(new Error(`unexpected route ${route}`), { status: 404 });
   };
@@ -140,7 +140,7 @@ test('a C4 JSON failure is logged with its code and redacted message, never with
   await h.settle(() => h.logs.some(line => line.includes('task handoff deferred')));
   const c4 = h.logs.filter(line => line.includes('c4 delivery failed'));
   assert.equal(c4.length, 1);
-  assert.match(c4[0], /ERROR \[multica\] c4 delivery failed \{"endpoint":"task-big@[0-9a-f-]+","code":"INTERNAL_ERROR","error":"failed to queue message: database is locked \(auth mat_\[REDACTED\]\)"\}$/);
+  assert.match(c4[0], /ERROR \[multica\] c4 delivery failed \{"endpoint":"task-big@[0-9a-f-]+\|issue:11111111-1111-4111-8111-111111111111","code":"INTERNAL_ERROR","error":"failed to queue message: database is locked \(auth mat_\[REDACTED\]\)"\}$/);
   assert.match(h.logs.join('\n'), /task handoff deferred \{"task_id":"task-big","stage":"deliver","code":"INTERNAL_ERROR","error":"C4 delivery failed: failed to queue message: database is locked \(auth mat_\[REDACTED\]\)","attempts":1\}/);
   assert.doesNotMatch(h.logs.join('\n'), /private comment body|Multica follow-up|SECRET|--content|Command failed/);
   assert.equal(h.received().length, 1, 'the stub did run');
@@ -153,7 +153,7 @@ test('a C4 script that exits non-zero without output is logged with its exit cod
   await h.settle(() => h.logs.some(line => line.includes('task handoff deferred')));
   const c4 = h.logs.filter(line => line.includes('c4 delivery failed'));
   assert.equal(c4.length, 1);
-  assert.match(c4[0], /ERROR \[multica\] c4 delivery failed \{"endpoint":"task-big@[0-9a-f-]+","code":"EXIT_3","error":"Command failed: \[command omitted\]\\n"\}/);
+  assert.match(c4[0], /ERROR \[multica\] c4 delivery failed \{"endpoint":"task-big@[0-9a-f-]+\|issue:11111111-1111-4111-8111-111111111111","code":"EXIT_3","error":"Command failed: \[command omitted\]\\n"\}/);
   assert.match(h.logs.join('\n'), /task handoff deferred \{"task_id":"task-big","stage":"deliver","code":"EXIT_3"/);
   assert.doesNotMatch(h.logs.join('\n'), /private comment body|Multica follow-up|SECRET|--content/);
   assert.equal(h.received().length, 1, 'the stub did run');

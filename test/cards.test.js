@@ -139,3 +139,23 @@ test('cards leave reply instructions to C4 without promising automatic forwardin
     assert.ok(cards[index].includes(`complete-posted '${taskId}' "<mention-free closing note>"`));
   }
 });
+
+
+test('new issue and follow-up cards carry one consistent typed endpoint and worktree lifecycle', () => {
+  const task = { id: 'task', issue_id: '11111111-1111-4111-8111-111111111111', execution_generation: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', prior_work_dir: '/prior/issue-worktree' };
+  const endpoint = `${task.id}@${task.execution_generation}|issue:${task.issue_id}`;
+  for (const value of [task, { ...task, trigger_comment_id: 'comment', trigger_comment_content: 'repair' }]) {
+    const card = buildTaskCard(value, { title: 'Work' });
+    for (const command of ['begin', 'quiesce', 'progress', 'fail', 'complete-posted']) assert.ok(card.includes(`${command} '${endpoint}'`), command);
+    assert.match(card, /separate git worktree for this issue/);
+    assert.match(card, /Resume prior_work_dir/);
+    assert.match(card, /only after the issue is completed AND its changes are merged/);
+    assert.match(card, /prior\/issue-worktree/);
+  }
+});
+test('new chat commands use the chat route without issue worktree cleanup instructions', () => {
+  const task = { id: 'task', chat_session_id: '22222222-2222-4222-8222-222222222222', execution_generation: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+  const card = buildChatCard(task);
+  assert.ok(card.includes(`fail 'task@${task.execution_generation}|chat:${task.chat_session_id}'`));
+  assert.doesNotMatch(card, /Remove this worktree/);
+});

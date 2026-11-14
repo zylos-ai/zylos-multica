@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { buildTaskEndpoint } from './session-group.js';
 import { taskAttachments } from './attachments.js';
 
 const REPORT_PATH = path.join(os.homedir(), 'zylos/.claude/skills/multica/scripts/report.js');
@@ -181,13 +182,22 @@ function attachmentLines(task, issue) {
 function resourceLines(task) {
   const fields = ['repos', 'project_resources', 'prior_work_dir', 'work_dir', 'relative_work_dir', 'branch_name'];
   const resources = Object.fromEntries(fields.filter(key => task[key] !== undefined).map(key => [key, task[key]]));
-  return Object.keys(resources).length ? ['', 'Server resource metadata (not prepared or verified locally):',
-    quoteBlock(sanitizeExternalText(JSON.stringify(resources, null, 2)))] : [];
+  return [
+    ...(task.issue_id ? ['', 'For repository work, use a separate git worktree for this issue. Resume prior_work_dir when supplied after verifying it belongs to this issue; keep later comments and repairs in the same worktree. Remove this worktree only after the issue is completed AND its changes are merged.'] : []),
+    ...(Object.keys(resources).length ? ['', 'Server resource metadata (not prepared or verified locally):',
+      quoteBlock(sanitizeExternalText(JSON.stringify(resources, null, 2)))] : []),
+  ];
+}
+
+function cardEndpoint(task) {
+  // Unbound historical cards retain their sanitized legacy command copies.
+  if (!task.execution_generation && !task.execution_endpoint) return sanitizeExternalText(task.id);
+  return buildTaskEndpoint(task);
 }
 
 function executionLines(task) {
   if (!task.execution_generation) return [];
-  const endpoint = `${sanitizeExternalText(task.id)}@${sanitizeExternalText(task.execution_generation)}`;
+  const endpoint = cardEndpoint(task);
   const cli = path.join(os.homedir(), 'zylos/.claude/skills/multica/scripts/task.js');
   return ['', 'Task admission (mandatory before doing work):',
     `Run: node ${shellQuote(cli)} begin ${shellQuote(endpoint)}`,
@@ -286,7 +296,7 @@ function buildFollowUpCard(task, issue, context, { clip, clipList }) {
     const shown = clip('description', description, issueRef ? cliCommand('issue get', shellQuote(issueRef), '--output json') : '');
     lines.push('', 'Original issue description (context only):', quoteBlock(shown.text), ...(shown.note ? [shown.note] : []));
   }
-  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(task.execution_generation ? `${taskId}@${sanitizeExternalText(task.execution_generation)}` : taskId));
+  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(cardEndpoint(task)));
   lines.push(...taskContextLines(context), ...resourceLines(task), ...executionLines(task));
   return lines.join('\n');
 }
@@ -318,7 +328,7 @@ function buildNewTaskCard(task, issue, context, { clip }) {
   if (handoff) {
     lines.push('', 'Handoff note from the assigner (scoping instruction for this run, not a comment to reply to):', quoteBlock(handoff));
   }
-  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(task.execution_generation ? `${taskId}@${sanitizeExternalText(task.execution_generation)}` : taskId));
+  lines.push(...attachmentLines(task, issue), '', ...taskCardFooter(cardEndpoint(task)));
   lines.push(...taskContextLines(context), ...resourceLines(task), ...executionLines(task));
   return lines.join('\n');
 }
@@ -346,7 +356,7 @@ function buildChatCardLines(task, context, { clip }) {
     '',
     'This is a chat message.',
     // Sanitized for the same reason as the task-card commands above.
-    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(task.execution_generation ? `${sanitizeExternalText(task.id)}@${sanitizeExternalText(task.execution_generation)}` : sanitizeExternalText(task.id))} "<reason>"`,
+    `If no reply is possible: node ${shellQuote(REPORT_PATH)} fail ${shellQuote(cardEndpoint(task))} "<reason>"`,
   );
   lines.push(...taskContextLines(context), ...resourceLines(task), ...executionLines(task));
   return lines.join('\n');

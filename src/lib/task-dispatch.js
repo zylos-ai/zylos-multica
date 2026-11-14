@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { parseTaskEndpoint } from './task-report.js';
+import { parseTaskEndpoint, buildTaskEndpoint } from './session-group.js';
 import { atomicTaskWrite } from './task-state.js';
 import { finishAbandonment } from './agent-execution.js';
 import { describeError } from './log-redact.js';
@@ -87,9 +87,9 @@ export function createTaskDispatcher(config, {
     // repeat only original claim-aware start; same running claim is idempotent.
     if (!record.delivery || record.delivery.resource_model !== 'agent-owned-v1') {
       progress.stage = 'render';
-      const content = await render(entry);
+      const content = await render({ ...entry, endpoint: record.delivery?.endpoint ?? buildTaskEndpoint(entry.task, entry.generation) });
       progress.stage = 'state_write';
-      await state.setAgentDelivery(record.task_id, entry.generation, { content, endpoint: `${record.task_id}@${entry.generation}`, ...(entry.dueAt ? { dueAt: entry.dueAt } : {}) });
+      await state.setAgentDelivery(record.task_id, entry.generation, { content, endpoint: record.delivery?.endpoint ?? buildTaskEndpoint(entry.task, entry.generation), ...(entry.dueAt ? { dueAt: entry.dueAt } : {}) });
     }
     signal.throwIfAborted();
     progress.stage = 'start';

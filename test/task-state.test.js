@@ -391,3 +391,19 @@ test('failure confirmation still rejects different error text and a mismatched e
     assert.deepEqual(result.report.differences, [explicit ? 'failure_reason' : 'error']);
   }
 });
+
+test('delivery accepts a matching typed route, rejects another issue/chat identity, and keeps its frozen endpoint', async t => {
+  const f = await fixture(t);
+  const issue = '11111111-1111-4111-8111-111111111111';
+  const typedTask = { ...task, id: 'typed', issue_id: issue };
+  const { generation } = await f.state.registerClaim(typedTask);
+  const endpoint = `typed@${generation}|issue:${issue}`;
+  for (const route of [`issue:22222222-2222-4222-8222-222222222222`, `chat:${issue}`]) {
+    await assert.rejects(f.state.setAgentDelivery('typed', generation, { content: 'card', endpoint: `typed@${generation}|${route}` }), /invalid task delivery/);
+  }
+  await f.state.setAgentDelivery('typed', generation, { content: 'card', endpoint });
+  assert.equal(f.state.get('typed').delivery.endpoint, endpoint);
+  await f.state.setAgentDelivery('typed', generation, { content: 'another', endpoint: `typed@${generation}` });
+  assert.equal(f.state.get('typed').delivery.endpoint, endpoint);
+  assert.equal(f.state.get('typed').delivery.content, 'card');
+});
