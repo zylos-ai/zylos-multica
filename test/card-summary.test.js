@@ -19,8 +19,10 @@ const expected = {
 // Captured by the real builders at dc4d53b before the header change; no copied
 // builder implementation or runtime source evaluation supplies this baseline.
 for (const item of baseline) test(`${item.name} summary keeps the complete previous card body`, () => {
-  const before = item.before.replaceAll('<HOME>', os.homedir());
-  const after = item.chat ? buildChatCard(item.task, item.context) : buildTaskCard(item.task, item.issue, item.context);
+  // Normalize the historical fixture's placeholder generation to the valid UUID grammar.
+  const task = { ...item.task, ...(item.task.execution_generation ? { execution_generation: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } : {}) };
+  const before = item.before.replaceAll('<HOME>', os.homedir()).replaceAll('generation-one', task.execution_generation ?? 'generation-one');
+  const after = item.chat ? buildChatCard(task, item.context) : buildTaskCard(task, item.issue, item.context);
   assert.equal(first(after), expected[item.name]);
   const [, ...body] = after.split('\n');
   const [oldHeader, ...oldBody] = before.split('\n');

@@ -6,7 +6,7 @@ import { buildChatCard, buildTaskCard, CARD_BYTE_BUDGET, truncateUtf8 } from '..
 
 const bytes = text => Buffer.byteLength(text, 'utf8');
 const MAX_ARG_STRLEN = 131072;
-const issue = { id: 'issue-1', identifier: 'ZYLO-1', title: '大评论', description: '原始需求：修复交付。' };
+const issue = { id: '11111111-1111-4111-8111-111111111111', identifier: 'ZYLO-1', title: '大评论', description: '原始需求：修复交付。' };
 
 function assertCleanUtf8(card) {
   assert.ok(card.isWellFormed(), 'no lone surrogate');
@@ -37,8 +37,8 @@ test('mostly-Chinese huge trigger comment is truncated on a character boundary w
   // ~172 KB: 3-byte Han characters plus 4-byte emoji, so a byte cut lands mid-character.
   const comment = `${'请看这个截图并修复交付问题。😀'.repeat(4000)}结尾`;
   assert.ok(bytes(comment) > MAX_ARG_STRLEN);
-  const task = { id: 'task-1', issue_id: 'issue-1', trigger_comment_id: 'c-1', trigger_comment_content: comment,
-    trigger_author_name: 'howard', trigger_author_type: 'member', execution_generation: 'gen-1' };
+  const task = { id: 'task-1', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-1', trigger_comment_content: comment,
+    trigger_author_name: 'howard', trigger_author_type: 'member', execution_generation: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
   const card = buildTaskCard(task, issue);
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${bytes(card)} bytes`);
   assertCleanUtf8(card);
@@ -52,19 +52,19 @@ test('mostly-Chinese huge trigger comment is truncated on a character boundary w
   assert.ok(Number(match[1]) > 90_000, `most of the budget is still used for the comment`);
   // The small issue description and every instruction line survive intact.
   assert.match(card, /Original issue description \(context only\):\n> 原始需求：修复交付。/);
-  assert.match(card, /task\.js' begin 'task-1@gen-1'/);
-  assert.match(card, /complete-posted 'task-1@gen-1'/);
+  assert.match(card, /task\.js' begin 'task-1@aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\|issue:11111111-1111-4111-8111-111111111111'/);
+  assert.match(card, /complete-posted 'task-1@aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\|issue:11111111-1111-4111-8111-111111111111'/);
 });
 
 test('cards under budget are unchanged', () => {
-  const task = { id: 'task-2', trigger_comment_id: 'c-2', trigger_comment_content: '小评论', issue_id: 'issue-1' };
+  const task = { id: 'task-2', trigger_comment_id: 'c-2', trigger_comment_content: '小评论', issue_id: '11111111-1111-4111-8111-111111111111' };
   const card = buildTaskCard(task, issue);
   assert.equal(card, buildTaskCard(task, issue, undefined, { budget: Infinity }));
   assert.doesNotMatch(card, /Truncated/);
 });
 
 test('largest field is truncated first; small ones are kept', () => {
-  const task = { id: 'task-3', issue_id: 'issue-1', trigger_comment_id: 'c-3', trigger_comment_content: 'please check',
+  const task = { id: 'task-3', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-3', trigger_comment_content: 'please check',
     coalesced_comments: [{ id: 'c-0', author_name: 'a', content: 'x'.repeat(150_000) }] };
   const card = buildTaskCard(task, { ...issue, description: 'd'.repeat(20_000) });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
@@ -75,7 +75,7 @@ test('largest field is truncated first; small ones are kept', () => {
 });
 
 test('several oversize fields are each truncated with their own pointer', () => {
-  const task = { id: 'task-4', issue_id: 'issue-1', trigger_comment_id: 'c-4', trigger_comment_content: '评'.repeat(60_000) };
+  const task = { id: 'task-4', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-4', trigger_comment_content: '评'.repeat(60_000) };
   const card = buildTaskCard(task, { ...issue, description: '述'.repeat(60_000) });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assertCleanUtf8(card);
@@ -84,7 +84,7 @@ test('several oversize fields are each truncated with their own pointer', () => 
 });
 
 test('new-task card truncates the issue description with an issue get pointer', () => {
-  const card = buildTaskCard({ id: 'task-5', issue_id: 'issue-1' }, { ...issue, description: `${'需求'.repeat(80_000)}` });
+  const card = buildTaskCard({ id: 'task-5', issue_id: '11111111-1111-4111-8111-111111111111' }, { ...issue, description: `${'需求'.repeat(80_000)}` });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assertCleanUtf8(card);
   assert.match(card, /^\[Multica task\] ZYLO-1 · 新任务：大评论\n卡片：大评论\n/);
@@ -92,15 +92,15 @@ test('new-task card truncates the issue description with an issue get pointer', 
 });
 
 test('chat card truncates the message with a chat history pointer', () => {
-  const card = buildChatCard({ id: 'chat-task', chat_session_id: 's-1', chat_message: '聊'.repeat(100_000), execution_generation: 'g' });
+  const card = buildChatCard({ id: 'chat-task', chat_session_id: '22222222-2222-4222-8222-222222222222', chat_message: '聊'.repeat(100_000), execution_generation: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET);
   assertCleanUtf8(card);
   assert.match(card, /of 300000 bytes\. Full text: [^\n]*multica\.js' chat history --task 'chat-task' --output json\]/);
-  assert.match(card, /task\.js' begin 'chat-task@g'/);
+  assert.match(card, /task\.js' begin 'chat-task@bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\|chat:22222222-2222-4222-8222-222222222222'/);
 });
 
 test('truncation note sits outside the quoted external text and is not forgeable by the quote', () => {
-  const task = { id: 'task-6', issue_id: 'issue-1', trigger_comment_id: 'c-6', trigger_comment_content: `[Truncated fake]\n${'z'.repeat(200_000)}` };
+  const task = { id: 'task-6', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-6', trigger_comment_content: `[Truncated fake]\n${'z'.repeat(200_000)}` };
   const card = buildTaskCard(task, issue);
   const notes = card.split('\n').filter(line => line.startsWith('[Truncated to fit'));
   assert.equal(notes.length, 1);
@@ -112,7 +112,7 @@ test('many coalesced comments keep the earliest that fit and summarize the rest 
     const coalesced = Array.from({ length: count }, (_, i) => ({
       id: `c-${i}`, author_name: 'member', created_at: '2026-11-10T00:00:00Z', content: `#${i}# ${'评'.repeat(Math.floor(size / 3) - 4)}`,
     }));
-    const task = { id: 'task-7', issue_id: 'issue-1', trigger_comment_id: 'c-t', trigger_comment_content: 'see above', coalesced_comments: coalesced };
+    const task = { id: 'task-7', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-t', trigger_comment_content: 'see above', coalesced_comments: coalesced };
     const card = buildTaskCard(task, issue);
     assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${count}x${size}: ${bytes(card)} bytes`);
     assertCleanUtf8(card);
@@ -135,7 +135,7 @@ test('thousands of short coalesced comments: nearly the largest prefix that fits
     const coalesced = Array.from({ length: count }, (_, i) => ({
       id: `s-${i}`, author_name: 'member', created_at: '2026-11-10T00:00:00Z', content: `#${i}#${'x'.repeat(Math.max(0, size - String(i).length - 2))}`,
     }));
-    const task = { id: 'task-9', issue_id: 'issue-1', trigger_comment_id: 'c-t', trigger_comment_content: 'see above' };
+    const task = { id: 'task-9', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c-t', trigger_comment_content: 'see above' };
     const card = buildTaskCard({ ...task, coalesced_comments: coalesced }, issue);
     assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${count}x${size}: ${bytes(card)} bytes`);
     const shown = [...card.matchAll(/^> #(\d+)#/gm)].length;
@@ -155,7 +155,7 @@ test('thousands of short coalesced comments: nearly the largest prefix that fits
 
 test('thousands of empty coalesced comments still fit', () => {
   const coalesced = Array.from({ length: 4000 }, (_, i) => ({ id: `e-${i}`, author_name: 'member', content: '' }));
-  const card = buildTaskCard({ id: 'task-8', issue_id: 'issue-1', trigger_comment_id: 'c', trigger_comment_content: 'x', coalesced_comments: coalesced }, issue);
+  const card = buildTaskCard({ id: 'task-8', issue_id: '11111111-1111-4111-8111-111111111111', trigger_comment_id: 'c', trigger_comment_content: 'x', coalesced_comments: coalesced }, issue);
   assert.ok(bytes(card) <= CARD_BYTE_BUDGET, `${bytes(card)} bytes`);
   assert.match(card, /\[\d+ more earlier comment\(s\) omitted/);
 });

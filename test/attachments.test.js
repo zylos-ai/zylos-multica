@@ -205,7 +205,7 @@ test('bridge persists claim attachment allowlist before delivering either card; 
         },
         runScript: async () => { events.push('deliver'); return { ok: true, stdout: '', stderr: '' }; },
       });
-      const task = { id: 'task', workspace_id: 'ws', auth_token: 'mat_test', ...(chat ? { chat_session_id: 'chat' } : { issue_id: 'issue' }) };
+      const task = { id: 'task', workspace_id: 'ws', auth_token: 'mat_test', ...(chat ? { chat_session_id: '22222222-2222-4222-8222-222222222222' } : { issue_id: '11111111-1111-4111-8111-111111111111' }) };
       if (fail) { await assert.rejects(bridge.handleTask(task), /disk unavailable/); assert.deepEqual(events, ['token', 'manifest']); }
       else { assert.equal(await bridge.handleTask(task), true); assert.deepEqual(events, ['token', 'manifest', 'deliver', 'start']); }
     }
@@ -225,7 +225,7 @@ test('issue context fetch failure leaves task dispatched; redispatch delivers al
     },
     request: async (_config, method, route) => {
       events.push(`${method} ${route}`);
-      if (route === '/api/issues/issue') {
+      if (route === '/api/issues/11111111-1111-4111-8111-111111111111') {
         if (fail) throw new Error('temporary issue GET failure');
         return { title: 'Issue', attachments: [{ id: 'att', filename: 'required.txt' }] };
       }
@@ -237,13 +237,13 @@ test('issue context fetch failure leaves task dispatched; redispatch delivers al
       return { ok: true, stdout: '', stderr: '' };
     },
   });
-  const task = { id: 'task', issue_id: 'issue', workspace_id: 'ws', auth_token: 'mat_test' };
+  const task = { id: 'task', issue_id: '11111111-1111-4111-8111-111111111111', workspace_id: 'ws', auth_token: 'mat_test' };
   assert.equal(await bridge.handleTask(task), false);
-  assert.deepEqual(events, ['token', 'GET /api/issues/issue']);
+  assert.deepEqual(events, ['token', 'GET /api/issues/11111111-1111-4111-8111-111111111111']);
   fail = false;
   events.length = 0;
   assert.equal(await bridge.handleTask(task), true);
-  assert.deepEqual(events, ['token', 'GET /api/issues/issue', 'manifest', 'deliver', 'POST /api/daemon/tasks/task/start']);
+  assert.deepEqual(events, ['token', 'GET /api/issues/11111111-1111-4111-8111-111111111111', 'manifest', 'deliver', 'POST /api/daemon/tasks/task/start']);
 });
 
 test('relative URLs retain authentication; HTTP denial is explicit without retry or response leakage', async (t) => {
