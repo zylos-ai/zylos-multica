@@ -5,16 +5,8 @@ import { loadTaskReplyContext, removeTaskToken } from './task-tokens.js';
 import { reportTask } from './multica-api.js';
 import { createReplyGuard } from './reply-guard.js';
 
-export function parseTaskEndpoint(endpoint, { allowLegacy = false } = {}) {
-  if (typeof endpoint !== 'string' || !endpoint || /[\s/\\\0]/.test(endpoint)) throw new Error('invalid task endpoint');
-  const parts = endpoint.split('@');
-  if (!/^[A-Za-z0-9_-]+$/.test(parts[0])) throw new Error('invalid task id');
-  if (parts.length === 1 && allowLegacy) return { taskId: endpoint };
-  if (parts.length !== 2 || !parts[0] || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parts[1])) {
-    throw new Error('Terminal reporting requires task_id@generation from the current task card; legacy tasks need explicit recovery, not an inferred generation');
-  }
-  return { taskId: parts[0], generation: parts[1] };
-}
+import { parseTaskEndpoint } from './session-group.js';
+export { parseTaskEndpoint } from './session-group.js';
 
 export async function reportFromCLI(config, endpoint, action, text, options = {}) {
   const { taskId, generation } = parseTaskEndpoint(endpoint, { allowLegacy: action !== 'reconcile' });

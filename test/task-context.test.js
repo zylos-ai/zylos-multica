@@ -135,7 +135,8 @@ test('all card kinds include local context index without copying externally supp
 test('bridge persists context before each delivery and refuses unresolved context before C4/start', async () => {
   for (const chat of [false, true]) {
     const events = [];
-    const task = fixture(); if (chat) task.chat_session_id = 'chat-a';
+    const task = { ...fixture(), issue_id: '11111111-1111-4111-8111-111111111111' };
+    if (chat) task.chat_session_id = '22222222-2222-4222-8222-222222222222';
     const bridge = createBridge(identity, {
       createWakeupChannel: () => ({ start() {}, stop() {} }),
       storeTaskToken() {},

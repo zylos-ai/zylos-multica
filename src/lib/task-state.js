@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { parseTaskEndpoint, buildTaskEndpoint } from './session-group.js';
 import { DATA_DIR } from './config.js';
 import { multicaRequest } from './multica-api.js';
 import { removeTaskToken } from './task-tokens.js';
@@ -134,6 +135,14 @@ export function createTaskState(config, options = {}) {
     if (record.execution.quiesced) throw new Error('task execution is quiesced');
     if (requireRunning && !record.start_confirmed) throw new Error('task start is not confirmed');
     return record;
+  }
+  function validDeliveryEndpoint(record, endpoint) {
+    try {
+      const parsed = parseTaskEndpoint(endpoint);
+      if (parsed.taskId !== record.task_id || parsed.generation !== record.generation) return false;
+      // Explicit legacy addresses remain valid. Typed routes must match the claim.
+      return !parsed.routeType || endpoint === buildTaskEndpoint({ id: record.task_id, issue_id: record.issue_id, chat_session_id: record.chat_session_id }, record.generation);
+    } catch { return false; }
   }
   function identity(record, remote) {
     return remote && typeof remote === 'object' && remote.id === record.task_id
@@ -360,7 +369,7 @@ export function createTaskState(config, options = {}) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation });
         if (record.execution.accepted) throw new Error('cannot replace an accepted task card');
-        if (!delivery || delivery.endpoint !== `${taskId}@${generation}` || typeof delivery.content !== 'string'
+        if (!delivery || !validDeliveryEndpoint(record, delivery.endpoint) || typeof delivery.content !== 'string'
           || !delivery.content || delivery.content.includes('\0') || !delivery.content.isWellFormed()) throw new Error('invalid task delivery');
         if (record.delivery?.resource_model === 'agent-owned-v1') return record;
         if (record.delivery) (record.delivery_history ??= []).push(record.delivery);
@@ -391,7 +400,7 @@ export function createTaskState(config, options = {}) {
     async setDelivery(taskId, generation, delivery) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation });
-        if (!delivery || delivery.endpoint !== `${taskId}@${generation}` || typeof delivery.content !== 'string'
+        if (!delivery || !validDeliveryEndpoint(record, delivery.endpoint) || typeof delivery.content !== 'string'
           || !delivery.content || delivery.content.includes('\0') || !delivery.content.isWellFormed()) throw new Error('invalid task delivery');
         const frozen = { content: delivery.content, endpoint: delivery.endpoint };
         if (delivery.dueAt !== undefined) frozen.dueAt = string(delivery.dueAt, 'delivery dueAt');

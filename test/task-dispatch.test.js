@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createTaskState } from '../src/lib/task-state.js';
 import { createTaskDispatcher } from '../src/lib/task-dispatch.js';
-const task = { id: 'task', agent_id: 'agent', runtime_id: 'runtime', workspace_id: 'workspace', issue_id: 'issue', dispatched_at: '2026-10-15T01:02:03.123456Z' };
+const task = { id: 'task', agent_id: 'agent', runtime_id: 'runtime', workspace_id: 'workspace', issue_id: '11111111-1111-4111-8111-111111111111', dispatched_at: '2026-10-15T01:02:03.123456Z' };
 function fixture(overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multica-dispatch-'));
   const config = { base_url: 'https://example.test', workspace_id: 'workspace', daemon_id: 'daemon' };
@@ -37,7 +37,7 @@ test('original claim start is confirmed before C4 handoff and frozen delivery su
   assert.deepEqual(f.events, ['start', 'deliver']);
   const record = f.state.get(task.id);
   assert.equal(record.delivery.content, 'fixed card');
-  assert.equal(record.delivery.endpoint, `${task.id}@${record.generation}`);
+  assert.equal(record.delivery.endpoint, `${task.id}@${record.generation}|issue:${task.issue_id}`);
   const resumed = f.make(); resumed.resume(); await resumed.drain();
   assert.equal(f.events.filter(e => e === 'deliver').length, 1);
 });

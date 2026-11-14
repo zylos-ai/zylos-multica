@@ -28,7 +28,7 @@ test('plain terminal endpoint remains usable for legacy tasks but rejects a boun
 
 test('Agent stop acknowledgement supplies explicit work directory and branch', async () => {
   const config = { base_url: 'https://example.test', workspace_id: 'ws', daemon_id: 'daemon' };
-  const task = { id: 'bound', workspace_id: 'ws', runtime_id: 'runtime', agent_id: 'agent', dispatched_at: '2026-10-15T01:02:03.123456Z' };
+  const task = { id: 'bound', issue_id: '11111111-1111-4111-8111-111111111111', workspace_id: 'ws', runtime_id: 'runtime', agent_id: 'agent', dispatched_at: '2026-10-15T01:02:03.123456Z' };
   const calls = [];
   const options = { root: fs.mkdtempSync(path.join(os.tmpdir(), 'multica-report-')), removeTaskToken() {},
     request: async (_config, _method, route, body) => {
@@ -39,7 +39,7 @@ test('Agent stop acknowledgement supplies explicit work directory and branch', a
   const state = createTaskState(config, options);
   const { generation } = await state.registerClaim(task);
   await state.start(task.id, generation); await state.markAccepted(task.id, generation); await state.acknowledgeStopped(task.id, generation, { work_dir: '/fixture/worktree', branch_name: 'task-branch' });
-  const result = await reportFromCLI(config, `bound@${generation}`, 'complete', 'done', options);
+  const result = await reportFromCLI(config, `bound@${generation}|issue:${task.issue_id}`, 'complete', 'done', options);
   assert.equal(result.report.state, 'confirmed');
   const body = calls.find(call => call.route.endsWith('/complete')).body;
   assert.equal(body.work_dir, '/fixture/worktree'); assert.equal(body.branch_name, 'task-branch');

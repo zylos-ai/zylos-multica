@@ -16,7 +16,7 @@ import { reportFromCLI } from '../src/lib/task-report.js';
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multica-agent-owned-')));
   const config = { base_url: 'https://example.test', workspace_id: 'workspace', daemon_id: 'daemon' };
-  const task = { id: 'task', issue_id: 'issue', agent_id: 'agent', runtime_id: 'runtime', workspace_id: 'workspace', dispatched_at: '2026-10-15T01:02:03.123456Z' };
+  const task = { id: 'task', issue_id: '11111111-1111-4111-8111-111111111111', agent_id: 'agent', runtime_id: 'runtime', workspace_id: 'workspace', dispatched_at: '2026-10-15T01:02:03.123456Z' };
   let remote = { ...task, status: 'dispatched' }, failStart = false, loseReport = false;
   const calls = [];
   const request = async (_config, method, route, body) => {
@@ -37,7 +37,7 @@ function fixture() {
   const delivered = [];
   const dispatcher = () => createTaskDispatcher(config, { state, root: path.join(root, 'dispatch'),
     snapshot: async task => ({ task, context: storeTaskContext(task, config, path.join(root, 'context')) }),
-    render: entry => buildTaskCard({ ...entry.task, execution_generation: entry.generation }, {}, entry.context),
+    render: entry => buildTaskCard({ ...entry.task, execution_generation: entry.generation, execution_endpoint: entry.endpoint }, {}, entry.context),
     deliver: async delivery => { delivered.push(delivery); return true; } });
   return { root, config, task, options, state, calls, delivered, dispatcher,
     failStart(value) { failStart = value; }, loseReport(value) { loseReport = value; }, cancel() { remote.status = 'cancelled'; } };
@@ -91,6 +91,9 @@ test('old frozen card is retained and replaced, while accepted work is never red
   const d = f.dispatcher(); await d.enqueue(f.task); await d.drain();
   const record = f.state.get('task');
   assert.equal(record.delivery_history[0].content, 'OLD mandatory binding/exec');
+  assert.equal(record.delivery.endpoint, `task@${generation}`);
+  assert.ok(record.delivery.content.includes(`begin 'task@${generation}'`));
+  assert.ok(!record.delivery.content.includes(`|issue:${f.task.issue_id}`));
   assert.match(record.delivery.content, /Agent|your own tools/);
   assert.doesNotMatch(record.delivery.content, /OLD mandatory/);
   await f.state.markAccepted('task', generation); d.resume(); await d.drain();
@@ -161,7 +164,7 @@ test('real task CLI begin/quiesce/fail round trip requires stopped flag, preserv
   const data = path.join(home, 'zylos/components/multica'); fs.mkdirSync(data, { recursive: true });
   fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify(config));
   const state = createTaskState(config, { root: path.join(data, 'task-state'), removeTaskToken() {} });
-  const record = await state.registerClaim(f.task), endpoint = `task@${record.generation}`;
+  const record = await state.registerClaim(f.task), endpoint = `task@${record.generation}|issue:${f.task.issue_id}`;
   const cli = (script, args) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [`scripts/${script}.js`, ...args], { cwd: path.resolve(import.meta.dirname, '..'), env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` } });
     let stdout = '', stderr = ''; child.stdout.on('data', value => stdout += value); child.stderr.on('data', value => stderr += value);
