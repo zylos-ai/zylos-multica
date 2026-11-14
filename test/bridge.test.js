@@ -203,10 +203,12 @@ test('issue task is still delivered when the claim carries no token or the token
 
 test('chat task persists its scoped token before delivery and start', async () => {
   const events = [];
+  let delivered;
   const bridge = createBridge(config, {
     createWakeupChannel: () => noWakeup,
     storeTaskToken: (taskId, authToken) => events.push(['token', taskId, authToken]),
-    runScript: async () => {
+    runScript: async (_script, args) => {
+      delivered = args;
       events.push(['deliver']);
       return { ok: true, stdout: '', stderr: '' };
     },
@@ -225,6 +227,9 @@ test('chat task persists its scoped token before delivery and start', async () =
     ['deliver'],
     ['start'],
   ]);
+  const endpoint = 'chat-1|chat:33333333-3333-4333-8333-333333333333';
+  assert.equal(delivered[delivered.indexOf('--endpoint') + 1], endpoint);
+  assert.ok(delivered[delivered.indexOf('--content') + 1].includes(`fail '${endpoint}'`));
 });
 
 test('chat task without a persistable scoped token is neither delivered nor started', async () => {

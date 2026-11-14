@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildC4ReceiveArgs } from '../src/lib/c4.js';
 import { createBridge, selectLatestMulticaSchedulerRows } from '../src/index.js';
 
@@ -63,4 +64,18 @@ test('failed scheduled typed legacy task reports using task id without its route
   try { await bridge.reconcileScheduledTasks(); } finally { bridge.stop(); }
   assert.equal(calls[0].route, '/api/daemon/tasks/task-1/status');
   assert.equal(calls[1].route, '/api/daemon/tasks/task-1/fail');
+});
+
+test('failed scheduled generation routes its full endpoint through the dispatcher and reports runtime offline', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multica-scheduled-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { ...process.env, HOME: path.join(root, 'home'), ZYLOS_DIR: path.join(root, 'instance'),
+    PM2_HOME: path.join(root, 'pm2'), TMPDIR: path.join(root, 'tmp'), TZ: 'Asia/Singapore' };
+  for (const key of ['HOME', 'ZYLOS_DIR', 'PM2_HOME', 'TMPDIR']) fs.mkdirSync(env[key], { recursive: true });
+  // Native module mocking observes the existing factory boundary; runtime code
+  // gains no test-only dependency hook. The helper calls the real dispatcher/state.
+  const result = spawnSync(process.execPath, ['--experimental-test-module-mocks',
+    new URL('./helpers/scheduled-failure.js', import.meta.url).pathname], { env, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /full endpoint and runtime_offline confirmed/);
 });
