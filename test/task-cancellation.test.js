@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { atomicTaskWrite, createTaskState } from '../src/lib/task-state.js';
+import { atomicTaskWrite, createTaskState, withTaskLock } from '../src/lib/task-state.js';
 import { CANCELLATION_POLL_MS, createTaskCancellationMonitor } from '../src/lib/task-cancellation.js';
 import { buildTaskEndpoint, sessionGroupForEndpoint } from '../src/lib/session-group.js';
 import { createTaskDispatcher } from '../src/lib/task-dispatch.js';
@@ -17,7 +17,7 @@ const issue = { id: issueId, status: 'in_progress', assignee_type: 'agent', assi
 async function fixture(t, { taskFields = {}, baseline = true, legacy = false, dueAt, accepted = true, delivered = true, scheduled } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cancellation-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const task = { id: 'task', workspace_id: config.workspace_id, agent_id: 'mentioned-agent', runtime_id: 'runtime',
+  const task = { id: 'task', workspace_id: config.workspace_id, agent_id: issue.assignee_id, runtime_id: 'runtime',
     issue_id: issueId, dispatched_at: '2026-11-14T00:00:00.123456Z', ...taskFields };
   const options = { root: path.join(root, 'state'), removeTaskToken() {},
     request: async () => ({ ...task, status: 'running' }) };
@@ -88,14 +88,23 @@ test('issue cancellation and custom cancelled categories notify even when task r
   }
 });
 
-test('assignment compares original type and id rather than the mentioned executing agent', async t => {
-  const f = await fixture(t);
+test('independent mention tasks keep running when the issue assignment changes', async t => {
+  const f = await fixture(t, { taskFields: { agent_id: 'mentioned-agent' } });
   const monitor = f.makeMonitor();
   await monitor.poll();
   assert.equal(f.notices.length, 0); // Assigned Agent differs from task.agent_id already.
   f.advance(); f.issue({ ...issue, assignee_type: 'member' }); await monitor.poll();
-  assert.equal(f.notices.length, 1);
-  assert.equal(f.state.get(f.task.id).cancellation_notice.reason, 'issue_reassigned');
+  assert.equal(f.notices.length, 0);
+  f.advance(); f.issue({ ...issue, assignee_id: '44444444-4444-4444-8444-444444444444' }); await monitor.poll();
+  assert.equal(f.notices.length, 0);
+  assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
+});
+
+test('assignment-owned tasks notify on changed type, id or removal', async t => {
+  const type = await fixture(t);
+  type.issue({ ...issue, assignee_type: 'member' }); await type.makeMonitor().poll();
+  assert.equal(type.notices.length, 1);
+  assert.equal(type.state.get(type.task.id).cancellation_notice.reason, 'issue_reassigned');
   const other = await fixture(t);
   other.issue({ ...issue, assignee_id: '44444444-4444-4444-8444-444444444444' }); await other.makeMonitor().poll();
   assert.equal(other.notices.length, 1);
@@ -105,15 +114,135 @@ test('assignment compares original type and id rather than the mentioned executi
 });
 
 test('old records establish a baseline on first successful read and detect only subsequent changes', async t => {
-  const f = await fixture(t, { baseline: false });
+  const f = await fixture(t, { baseline: false, taskFields: { agent_id: '55555555-5555-4555-8555-555555555555' } });
   f.issue({ ...issue, assignee_id: '55555555-5555-4555-8555-555555555555' });
   const monitor = f.makeMonitor(); await monitor.poll();
   assert.equal(f.notices.length, 0);
   assert.equal(f.state.get(f.task.id).issue_assignment.id, '55555555-5555-4555-8555-555555555555');
   // A stale dispatch snapshot must not overwrite the established baseline.
   await f.state.captureIssueAssignment(f.task.id, f.generation, issue);
+  assert.equal(f.state.get(f.task.id).issue_assignment.id, '55555555-5555-4555-8555-555555555555');
   f.advance(); f.issue({ ...issue, assignee_id: '66666666-6666-4666-8666-666666666666' }); await monitor.poll();
   assert.equal(f.notices.length, 1);
+});
+
+test('squad reassignment requires a frozen leader-task baseline belonging to this executor', async t => {
+  const squadId = '77777777-7777-4777-8777-777777777777';
+  for (const [leaderTask, leaderId, expected] of [[true, issue.assignee_id, 1],
+    [false, issue.assignee_id, 0], [true, '88888888-8888-4888-8888-888888888888', 0]]) {
+    const f = await fixture(t, { baseline: false, taskFields: { is_leader_task: leaderTask } });
+    const reads = [];
+    const state = createTaskState(config, { ...f.options, request: async (_c, _m, route) => {
+      reads.push(route); return { id: squadId, workspace_id: config.workspace_id, leader_id: leaderId };
+    } });
+    const baseline = { ...issue, assignee_type: 'squad', assignee_id: squadId };
+    await state.captureIssueAssignment(f.task.id, f.generation, baseline);
+    assert.equal(reads.length, leaderTask ? 1 : 0);
+    await state.captureIssueAssignment(f.task.id, f.generation, baseline);
+    assert.equal(reads.length, leaderTask ? 1 : 0, 'delivery baseline must not be re-resolved');
+    f.issue({ ...issue });
+    await f.makeMonitor({ state: createTaskState(config, f.options) }).poll();
+    assert.equal(f.notices.length, expected);
+    assert.equal(f.calls.filter(call => call.route.includes('/api/squads/')).length, 0);
+  }
+  const legacy = await fixture(t, { baseline: false });
+  const record = legacy.state.get(legacy.task.id);
+  record.issue_assignment = { type: 'squad', id: squadId };
+  delete record.is_leader_task;
+  const file = fs.readdirSync(legacy.options.root).find(name => name.endsWith('.json'));
+  atomicTaskWrite(path.join(legacy.options.root, file), record);
+  await legacy.makeMonitor().poll();
+  assert.equal(legacy.notices.length, 0, 'legacy records cannot reconstruct squad ownership');
+});
+
+test('squad baseline rejects wrong identity, workspace or malformed leader', async t => {
+  const squadId = '77777777-7777-4777-8777-777777777777';
+  for (const change of [{ id: issueId }, { workspace_id: 'another-workspace' }, { leader_id: 'invalid' }]) {
+    const f = await fixture(t, { baseline: false, taskFields: { is_leader_task: true } });
+    const state = createTaskState(config, { ...f.options, request: async () => ({ id: squadId, workspace_id: config.workspace_id, leader_id: issue.assignee_id, ...change }) });
+    await assert.rejects(state.captureIssueAssignment(f.task.id, f.generation, { ...issue, assignee_type: 'squad', assignee_id: squadId }), /invalid squad/);
+    assert.equal(state.get(f.task.id).issue_assignment, undefined);
+  }
+});
+
+test('a missing task status sends one durable cancellation notice and stops future checks', async t => {
+  const f = await fixture(t);
+  let queries = 0;
+  const request = async (_c, _m, route) => {
+    assert.ok(route.endsWith('/status'));
+    queries++;
+    throw Object.assign(new Error('task not found'), { status: 404 });
+  };
+  await f.makeMonitor({ request }).poll();
+  f.advance(); await f.makeMonitor({ request, state: createTaskState(config, f.options) }).poll();
+  assert.equal(queries, 1);
+  assert.equal(f.notices.length, 1);
+  assert.equal(f.state.get(f.task.id).cancellation_notice.reason, 'task_cancelled');
+  assert.equal(f.logs.some(([level]) => level === 'WARN'), false);
+});
+
+test('only status 404 interrupts; other HTTP errors, issue 404 and timeouts retain work', async t => {
+  for (const [failedRoute, error, kind, status] of [
+    ['/status', Object.assign(new Error('forbidden'), { status: 403 }), 'http', 403],
+    ['/status', Object.assign(new Error('unavailable'), { status: 500 }), 'http', 500],
+    ['/status', Object.assign(new Error('request timed out'), { name: 'TimeoutError' }), 'timeout', undefined],
+    [`/api/issues/${issueId}`, Object.assign(new Error('missing issue'), { status: 404 }), 'http', 404],
+  ]) {
+    const f = await fixture(t);
+    const monitor = f.makeMonitor({ request: async (_c, _m, route) => {
+      if (route.endsWith(failedRoute)) throw error;
+      return { status: 'running' };
+    } });
+    await monitor.poll(); f.advance(); await monitor.poll();
+    assert.equal(f.notices.length, 0);
+    assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
+    assert.equal(f.logs.length, 2);
+    assert.equal(f.logs[0][2].error_type, kind);
+    assert.equal(f.logs[0][2].http_status, status);
+  }
+});
+
+test('cancellation reservation revalidates monitor activity after waiting for the task lock', async t => {
+  for (const action of ['stop', 'reload']) {
+    const f = await fixture(t);
+    const lockfile = path.join(f.options.root, fs.readdirSync(f.options.root).find(name => name.endsWith('.lock')));
+    let entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const state = { ...f.state, notifyCancellation(...args) { entered(); return f.state.notifyCancellation(...args); } };
+    const cfg = { ...config, workspace_slug: 'workspace', runtime: { name: 'Agent' } };
+    const bridge = createBridge(cfg, { createTaskState: () => state,
+      createWakeupChannel: () => ({ start() {}, stop() {} }),
+      request: async () => ({ status: 'cancelled' }),
+      runScript: async () => ({ ok: true, stderr: '', stdout: JSON.stringify([{ id: 'schedule', type: 'one-time', status: 'failed', last_error: '',
+        reply_channel: 'multica', reply_endpoint: f.endpoint, next_run_at: 1 }]) }),
+    });
+    t.after(() => bridge.stop());
+    await bridge.reconcileScheduledTasks();
+    let polling;
+    await withTaskLock(lockfile, async () => {
+      polling = bridge.checkTaskCancellations();
+      let deadline;
+      try {
+        await Promise.race([waiting, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('cancellation did not reach the task lock')), 2000); })]);
+      } finally { clearTimeout(deadline); }
+      if (action === 'reload') bridge.updateConfig({ ...cfg, pat: 'replacement' });
+      else bridge.stop();
+    });
+    await polling;
+    assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
+  }
+});
+
+test('cancellation reservation rejects an endpoint inconsistent with its frozen claim', async t => {
+  const f = await fixture(t);
+  const record = f.state.get(f.task.id);
+  record.delivery.endpoint = `${f.task.id}@${f.generation}|issue:99999999-9999-4999-8999-999999999999`;
+  const file = fs.readdirSync(f.options.root).find(name => name.endsWith('.json'));
+  atomicTaskWrite(path.join(f.options.root, file), record);
+  let attempts = 0;
+  await assert.rejects(f.state.notifyCancellation(f.task.id, f.generation, 'task_cancelled', async () => { attempts++; return true; }), /invalid cancellation delivery endpoint/);
+  assert.equal(attempts, 0);
+  assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
 });
 
 test('stopped, undelivered, other-daemon and frozen-report tasks are not polled', async t => {
@@ -297,4 +426,34 @@ test('slow cancellation reads leave claims responsive and stop or config reload 
     assert.equal(notices, 0);
     assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
   }
+});
+
+test('shutdown drain retains an invalidated check after a reloaded monitor finishes', async t => {
+  const f = await fixture(t);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let queries = 0;
+  const cfg = { ...config, workspace_slug: 'workspace', runtime: { name: 'Agent' } };
+  const bridge = createBridge(cfg, { createTaskState: () => f.state,
+    createWakeupChannel: () => ({ start() {}, stop() {} }), preparationRoot: path.join(f.root, 'dispatch'),
+    request: async (_c, _m, route) => {
+      if (route.endsWith('/status')) return ++queries === 1 ? held : { status: 'completed' };
+      if (route.endsWith('/register')) return { runtimes: [{ id: 'runtime', type: 'zylos' }] };
+      if (route.endsWith('/claim')) return { tasks: [] };
+      return {};
+    },
+    runScript: async () => ({ ok: true, stderr: '', stdout: JSON.stringify([{ id: 'schedule', type: 'one-time', status: 'failed', last_error: '',
+      reply_channel: 'multica', reply_endpoint: f.endpoint, next_run_at: 1 }]) }),
+  });
+  t.after(async () => { bridge.stop(); release({ status: 'cancelled' }); await bridge.drainCancellationChecks(); });
+  await bridge.reconcileScheduledTasks(); await bridge.tick();
+  bridge.updateConfig({ ...cfg, pat: 'replacement' });
+  await bridge.tick(); await bridge.checkTaskCancellations();
+  assert.equal(queries, 2);
+  let drained = false;
+  const draining = bridge.drainCancellationChecks().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  release({ status: 'cancelled' }); await draining;
+  assert.equal(f.state.get(f.task.id).cancellation_notice, undefined);
 });

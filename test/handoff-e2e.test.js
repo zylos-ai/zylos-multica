@@ -55,7 +55,8 @@ function harness(t, { comment, title = 'Big comment', c4 = 'ok' }) {
     if (route === '/api/daemon/register') return { runtimes: [{ id: 'rt-1', type: 'zylos' }] };
     if (route === '/api/daemon/heartbeat') return {};
     if (route === '/api/daemon/tasks/claim') { if (claimed) return { tasks: [] }; claimed = true; return { tasks: [task] }; }
-    if (route === '/api/issues/11111111-1111-4111-8111-111111111111') return { id: '11111111-1111-4111-8111-111111111111', identifier: 'ZYLO-1', title, description: 'desc' };
+    if (route === '/api/issues/11111111-1111-4111-8111-111111111111') return { id: '11111111-1111-4111-8111-111111111111', identifier: 'ZYLO-1', title, description: 'desc', status: 'in_progress', assignee_type: 'agent', assignee_id: '33333333-3333-4333-8333-333333333333' };
+    if (route === `/api/daemon/tasks/${task.id}/status`) return { status: 'running' };
     if (route === `/api/daemon/tasks/${task.id}/start`) return { ...task, status: 'running' };
     throw Object.assign(new Error(`unexpected route ${route}`), { status: 404 });
   };

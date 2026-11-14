@@ -190,10 +190,21 @@ The bridge checks delivered, unstopped tasks without a frozen report at most
 once every 30 seconds on its existing loop (longer configured poll intervals or
 request failures delay discovery). Each sweep costs one task-status GET per
 eligible task and at most one issue GET per distinct associated issue; completed
-and failed tasks need no issue read. It compares assignment with the delivery
-snapshot, not with the executing Agent: explicitly mentioned Agents may differ
-from the assignee. Older records without a baseline establish it on their first
-successful read and cannot detect an earlier reassignment.
+and failed tasks need no issue read. A task-status 404 means the task was
+removed and receives the same one-attempt cancellation notice; other lookup
+errors are not cancellation signals. Assignment changes apply only when the
+delivery baseline assigned this executing Agent, or when a leader task's
+frozen squad leader is this Agent. Independent direct mentions keep running.
+Capturing a leader-task squad baseline adds one squad GET, with identity and
+workspace validation; later checks do not resolve its leader again. Older
+records without a baseline establish it on their first successful read and
+cannot detect an earlier reassignment. Older squad records without frozen
+leader provenance do not infer assignment ownership.
+The pinned platform claim omits the task's squad ID. If the same Agent leads
+two squads and both squads participate on this issue, the leader-role and
+baseline-leader checks cannot distinguish which squad caused the task; such a
+task may receive a reassignment notice even when it was an independent squad
+mention.
 
 One notification attempt is reserved durably before C4 is invoked. Restart,
 failure or an uncertain C4 result never repeats that attempt. A crash between

@@ -29,7 +29,15 @@ export function createTaskCancellationMonitor(config, {
       if (!record.execution.accepted && record.delivery.scheduled !== false
         && record.delivery.dueAt && Date.parse(record.delivery.dueAt) > wallNow()) continue;
       try {
-        const remote = await request(config, 'GET', `/api/daemon/tasks/${encodeURIComponent(record.task_id)}/status`, undefined, { timeoutMs: 5000 });
+        let remote;
+        try {
+          remote = await request(config, 'GET', `/api/daemon/tasks/${encodeURIComponent(record.task_id)}/status`, undefined, { timeoutMs: 5000 });
+        } catch (error) {
+          // Deleting an issue also deletes its task rows. Only this status
+          // endpoint's 404 is an authoritative stop signal.
+          if (error.status !== 404) throw error;
+          remote = { status: 'cancelled' };
+        }
         if (stopped) return;
         if (!remote || typeof remote.status !== 'string') throw new Error('invalid task status');
         if (!TERMINAL.has(remote.status) && !ACTIVE.has(remote.status)) throw new Error('invalid task status');
@@ -51,20 +59,27 @@ export function createTaskCancellationMonitor(config, {
             else {
               const original = issueAssignment({ assignee_type: record.issue_assignment.type, assignee_id: record.issue_assignment.id });
               if (!original) throw new Error('invalid original issue assignment');
-              if (assignment.type !== original.type || assignment.id !== original.id) reason = 'issue_reassigned';
+              const ownsAssignment = original.type === 'agent' && original.id === record.agent_id
+                || original.type === 'squad' && record.is_leader_task === true && record.issue_assignment.leader_id === record.agent_id;
+              if (ownsAssignment && (assignment.type !== original.type || assignment.id !== original.id)) reason = 'issue_reassigned';
             }
           }
         }
         if (!reason) continue;
         if (stopped) return;
         const identity = sanitizeExternalText(`Task ID: ${record.task_id}${record.issue_id ? ` · Issue ID: ${record.issue_id}` : record.chat_session_id ? ` · Chat ID: ${record.chat_session_id}` : ''}`);
-        const notice = await state.notifyCancellation(record.task_id, record.generation, reason, endpoint => stopped ? false : deliver(
+        const notice = await state.notifyCancellation(record.task_id, record.generation, reason, endpoint => deliver(
             `[Multica task notice] ${identity}\n${REASONS[reason]} Stop work for this task and stop its task processes. Acknowledge stopped work with task.js quiesce using this task’s original address and --stopped. Then use report.js fail with the same address and a stopped-work explanation to close this run. An already cancelled platform task may reconcile as superseded; do not retry it or report success. This notice does not authorize changing the issue, posting a business result, or taking over another assignment.`, endpoint), () => !stopped);
         if (notice) log(notice.outcome === 'accepted' ? 'INFO' : 'WARN', 'task cancellation notification attempted', {
           task_id: record.task_id, reason, outcome: notice.outcome,
         });
-      } catch {
-        log('WARN', 'task cancellation check failed; continuing', { task_id: record.task_id });
+      } catch (error) {
+        log('WARN', 'task cancellation check failed; continuing', {
+          task_id: record.task_id,
+          error_type: Number.isInteger(error.status) ? 'http'
+            : ['TimeoutError', 'AbortError'].includes(error.name) || error.code === 'ETIMEDOUT' ? 'timeout' : 'request_or_response',
+          ...(Number.isInteger(error.status) ? { http_status: error.status } : {}),
+        });
       }
     }
   }

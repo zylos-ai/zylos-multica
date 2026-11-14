@@ -535,7 +535,8 @@ export function createBridge(initialConfig, dependencies = {}) {
     await request(config, 'POST', '/api/daemon/heartbeat', { runtime_id: runtimeId });
     await reconcileScheduledTasks();
     // A finite sweep must not delay heartbeats/claims behind slow status reads.
-    cancellationCheck ??= checkTaskCancellations().finally(() => { cancellationCheck = undefined; });
+    // Track completion across reloads for shutdown; only the monitor gates polls.
+    cancellationCheck = Promise.all([cancellationCheck, checkTaskCancellations()]).then(() => undefined);
     if (dispatcher || fs.existsSync(dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'))) taskDispatcher().resume();
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
       daemon_id: config.daemon_id,

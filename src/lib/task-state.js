@@ -291,10 +291,16 @@ export function createTaskState(config, options = {}) {
   return {
     root, get, assertCurrent,
     async captureIssueAssignment(taskId, generation, issue) {
-      return lock(taskId, () => {
+      return lock(taskId, async () => {
         const record = current(taskId, generation);
         const assignment = issueAssignment(issue);
         if (record.issue_id !== issue?.id || !assignment || record.issue_assignment) return record;
+        if (assignment.type === 'squad' && record.is_leader_task === true) {
+          const squad = await request(config, 'GET', `/api/squads/${encodeURIComponent(assignment.id)}`, undefined, { workspaceHeader: true, timeoutMs: 5000 });
+          const leader = issueAssignment({ assignee_type: 'agent', assignee_id: squad?.leader_id });
+          if (squad?.id !== assignment.id || squad.workspace_id !== workspace || !leader) throw new Error('invalid squad assignment leader');
+          assignment.leader_id = leader.id;
+        }
         record.issue_assignment = assignment;
         return save(record);
       });
@@ -359,6 +365,7 @@ export function createTaskState(config, options = {}) {
         }
         return save({ schema: 1, origin, workspace_id: workspace, daemon_id: string(config.daemon_id, 'daemon_id'),
           task_id: id, agent_id: task.agent_id, runtime_id: task.runtime_id, dispatched_at: task.dispatched_at,
+          is_leader_task: task.is_leader_task === true,
           issue_id: task.issue_id || '', chat_session_id: task.chat_session_id || '', generation: crypto.randomUUID(),
           created_at: new Date(now()).toISOString(), start_confirmed: false,
           execution: { accepted: false, quiesced: false }, report: null });
