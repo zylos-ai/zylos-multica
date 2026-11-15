@@ -12,6 +12,7 @@ import { removeTaskToken } from './task-tokens.js';
 
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const closed = state => ['confirmed', 'conflict', 'superseded'].includes(state);
+export const taskReportSettled = record => closed(record?.report?.state) && record.report.token_cleanup_pending === false;
 const completeFields = { output: '', pr_url: '', session_id: '', work_dir: '', durable_work_dir: '', branch_name: '', session_rollout_missing: false, retired_session_id: '' };
 // Fail responses do not expose session mutation fields; do not accept writes
 // whose outcome cannot be verified through the pinned public readback API.
@@ -168,9 +169,12 @@ export function createTaskState(config, options = {}) {
     return Object.fromEntries(fields.filter(k => Object.hasOwn(remote, k)).map(k => [k, remote[k]]));
   }
   async function cleanup(record) {
-    if (!closed(record.report?.state)) return record;
-    try { removeToken(record.task_id); record.report.token_cleanup_pending = false; }
-    catch { record.report.token_cleanup_pending = true; }
+    if (!closed(record.report?.state) || taskReportSettled(record)) return record;
+    let pending;
+    try { removeToken(record.task_id); pending = false; }
+    catch { pending = true; }
+    if (record.report.token_cleanup_pending === pending) return record;
+    record.report.token_cleanup_pending = pending;
     return save(record);
   }
   async function observe(record, remote) {
