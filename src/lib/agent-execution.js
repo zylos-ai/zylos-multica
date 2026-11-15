@@ -14,19 +14,24 @@ export function inspectLegacyExecution(config, taskId, root = path.join(os.homed
 }
 
 export async function finishAbandonment(state, taskId, generation, reason, { config, acknowledgedStopped = false, legacyRoot } = {}) {
+  if (!state.get(taskId)) return null;
   if (config) {
     const legacy = inspectLegacyExecution(config, taskId, legacyRoot);
     const uncertain = legacy.operation || legacy.binding?.commands?.some(command => !['exited', 'stopped_confirmed'].includes(command.status));
-    if (uncertain && !acknowledgedStopped && !state.get(taskId)?.execution.legacy_stopped_acknowledged) {
+    const current = state.get(taskId);
+    if (!current) return null;
+    if (uncertain && !acknowledgedStopped && !current.execution.legacy_stopped_acknowledged) {
       throw new Error('legacy execution stop is unconfirmed; verify processes stopped, then abandon with --stopped');
     }
   }
-  if (acknowledgedStopped) await state.acknowledgeLegacyStopped(taskId, generation);
+  if (acknowledgedStopped && !await state.acknowledgeLegacyStopped(taskId, generation)) return null;
   let record = await state.abandonPreparation(taskId, generation, reason);
+  if (!record) return null;
   // No resource ownership is transferred or released. Historical records/files
   // are preserved; the operator is responsible for stopping any old processes.
   if (record.report) return state.reconcile(taskId, { generation, replay: true });
   record = await state.startAbandonedPreparation(taskId, generation);
+  if (!record) return null;
   return state.report(taskId, generation, 'fail', {
     error: record.preparation_failure.reason, failure_reason: 'environment_prepare_failed',
   });

@@ -18,7 +18,7 @@ try {
     throw new Error(`${action} is retired: Agent owns repository access, commands and continuation directories. Use inspect for historical paths; preserve old files and failed results. See docs/agent-owned-resources.md`);
   } else if (action === 'abandon' && args[0] === '--reason' && args.length === 3 && args[2] === '--stopped') {
     result = await finishAbandonment(state, taskId, generation, args[1], { config, acknowledgedStopped: true });
-    if (result.report?.state !== 'confirmed') process.exitCode = 1;
+    if (result && result.report?.state !== 'confirmed') process.exitCode = 1;
   } else if (action === 'begin' && !args.length) {
     await state.start(taskId, generation);
     result = { accepted: await state.markAccepted(taskId, generation), task_id: taskId, generation };
@@ -32,10 +32,10 @@ try {
     result = await state.acknowledgeStopped(taskId, generation, metadata);
   } else if (action === 'inspect' && !args.length) {
     const record = state.get(taskId);
-    if (!record || (generation && record.generation !== generation)) throw new Error('task generation mismatch');
-    result = { task: record, legacy: inspectLegacyExecution(config, taskId) };
+    if ((!record && !generation) || (record && generation && record.generation !== generation)) throw new Error('task generation mismatch');
+    result = record ? { task: record, legacy: inspectLegacyExecution(config, taskId) } : null;
   } else throw new Error('Usage: task.js begin|inspect <task@generation> | quiesce <task@generation> --stopped [--work-dir path] [--branch name] [--pr-url url] | abandon <task@generation> --reason text --stopped');
-  console.log(JSON.stringify(result, null, 2));
+  if (result !== null) console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
   process.exitCode = 1;

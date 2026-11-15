@@ -12,6 +12,7 @@ import { describeError } from './log-redact.js';
 // a time bound, and a time bound alone could fail a task that was retried zero
 // times because the daemon was down. Persisted in the preparation entry.
 export const HANDOFF_FAILURE_MIN_ATTEMPTS = 3;
+export const SETTLED_CLEANUP_LIMIT = 32;
 export const HANDOFF_FAILURE_MIN_MS = 10 * 60_000;
 
 function coded(message, code) { return Object.assign(new Error(message), { code }); }
@@ -35,6 +36,7 @@ export function createTaskDispatcher(config, {
   const filename = id => path.join(root, `${crypto.createHash('sha256').update(`${scope}|${id}`).digest('hex')}.json`);
   const jobs = new Map();
   let stopped = false;
+  let cleaning;
   const save = entry => atomicTaskWrite(filename(entry.task.id), entry);
   function read(id) {
     try { return JSON.parse(fs.readFileSync(filename(id), 'utf8')); }
@@ -49,7 +51,8 @@ export function createTaskDispatcher(config, {
     if (entry.handoff_failure?.terminal) return; // Stopped locally; see the ERROR logged when it stopped.
     progress.stage = 'state_read';
     let record = state.get(entry.task.id);
-    if (!record || record.generation !== entry.generation) throw coded('stale dispatch preparation', 'STALE_PREPARATION');
+    if (!record) return;
+    if (record.generation !== entry.generation) throw coded('stale dispatch preparation', 'STALE_PREPARATION');
     // Prior versions persisted this terminal decision before lifecycle failure.
     // Preserve that crash window; nonterminal old Git retry counters are inert.
     if (!record.preparation_failure && entry.preparationRetry?.terminal) {
@@ -70,6 +73,7 @@ export function createTaskDispatcher(config, {
     }
     if (record.cancellation_notice) return;
     if (entry.issue) record = await state.captureIssueAssignment(record.task_id, record.generation, entry.issue);
+    if (!record) return;
     const decided = entry.handoff_failure?.fail_reason;
     if (decided && record.execution.quiesced && !record.execution.accepted && record.start_confirmed) {
       // The bound already decided to fail this task and stopped admission, but
@@ -97,7 +101,7 @@ export function createTaskDispatcher(config, {
     progress.stage = 'start';
     await state.start(record.task_id, entry.generation);
     record = state.get(record.task_id);
-    if (record.execution.accepted || record.cancellation_notice) return;
+    if (!record || record.execution.accepted || record.cancellation_notice) return;
     progress.stage = 'deliver';
     const receipt = await deliver(record.delivery, entry.task);
     if (!receipt) throw coded('C4 delivery unconfirmed', 'C4_DELIVERY_UNCONFIRMED');
@@ -147,6 +151,8 @@ export function createTaskDispatcher(config, {
   async function recordFailure(entry, stage, error) {
     const id = entry.task.id;
     const detail = describeError(error, secretsFor(id));
+    try { if (!state.get(id)) return; }
+    catch { /* Keep existing failure bookkeeping for unreadable state. */ }
     const stored = read(id) ?? { scope, task: { id }, generation: entry.generation };
     if (stored.generation !== entry.generation || stored.handoff_failure?.terminal) return;
     const previous = stored.handoff_failure;
@@ -188,7 +194,8 @@ export function createTaskDispatcher(config, {
     if (stopped || jobs.has(entry.task.id) || entry.handoff_failure?.terminal) return;
     let record;
     try { record = state.get(entry.task.id); }
-    catch { /* step() retains the existing state-read failure bookkeeping. */ }
+    catch { /* step() retains the existing state-read failure bookkeeping. */ record = undefined; }
+    if (record === null) return;
     // Closed authority results with durable token cleanup have no work left.
     // Retain a job if its successful pass still needs to clear a handoff failure.
     if (record?.generation === entry.generation && taskReportSettled(record) && !entry.handoff_failure) return;
@@ -236,7 +243,8 @@ export function createTaskDispatcher(config, {
     async failScheduled(endpoint, error) {
       const { taskId, generation } = parseTaskEndpoint(endpoint);
       const record = state.get(taskId);
-      if (!record || record.generation !== generation) throw new Error('unknown scheduled task generation');
+      if (!record) return;
+      if (record.generation !== generation) throw new Error('unknown scheduled task generation');
       if (record.execution.accepted) return; // Scheduler failure cannot terminate already admitted work.
       if (record.report) return state.reconcile(taskId, { generation, replay: true });
       if (!record.delivery?.dueAt) throw new Error('task has no scheduled handoff');
@@ -251,11 +259,44 @@ export function createTaskDispatcher(config, {
         schedule({ task: { id: record.task_id }, generation: record.generation, scope });
       }
       for (const name of fs.readdirSync(root).filter(name => name.endsWith('.json'))) {
-        const entry = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+        let entry;
+        try { entry = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
         if (entry.scope === scope) schedule(entry);
       }
     },
-    async drain() { await Promise.all([...jobs.values()].map(job => job.promise)); },
+    pruneSettled() {
+      if (stopped || cleaning) return cleaning;
+      cleaning = (async () => {
+        let removed = 0;
+        let attempted = 0;
+        try {
+          for (const record of state.list()) {
+            if (stopped || attempted >= SETTLED_CLEANUP_LIMIT) break;
+            if (!taskReportSettled(record) || jobs.has(record.task_id)) continue;
+            try {
+              const entry = read(record.task_id);
+              if (entry && (entry.generation !== record.generation || entry.handoff_failure)) continue;
+              attempted++;
+              if (await state.removeSettled(record.task_id, record.generation, () => {
+                const current = read(record.task_id);
+                if (current && (current.generation !== record.generation || current.handoff_failure)) return false;
+                try { fs.unlinkSync(filename(record.task_id)); }
+                catch (error) { if (error.code !== 'ENOENT') throw error; }
+                return true;
+              })) removed++;
+            } catch (error) {
+              log('WARN', 'settled task cleanup failed; continuing', { task_id: record.task_id, ...describeError(error, secretsFor(record.task_id)) });
+            }
+          }
+        } catch (error) {
+          log('WARN', 'settled task cleanup scan failed; continuing', describeError(error, [config.pat]));
+        }
+        if (removed) log('INFO', 'settled task records removed', { count: removed });
+      })().finally(() => { cleaning = undefined; });
+      return cleaning;
+    },
+    async drain() { await Promise.all([cleaning, ...[...jobs.values()].map(job => job.promise)]); },
     stop() { stopped = true; for (const job of jobs.values()) job.controller.abort(); },
   };
 }

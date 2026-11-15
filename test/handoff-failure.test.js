@@ -379,7 +379,7 @@ test('prestart termination with a transient start failure keeps retrying and rep
   assert.equal(f.entry().handoff_failure, undefined);
 });
 
-test('stale state record at the bound: record lost or generation replaced stops locally with one ERROR and no platform write', async t => {
+test('missing state stops retrying quietly while a replaced generation retains stale failure handling', async t => {
   const stateFiles = f => fs.readdirSync(path.join(f.root, 'state')).filter(name => name.endsWith('.json')).map(name => path.join(f.root, 'state', name));
   const cases = [
     { name: 'record lost', replace: async f => { for (const file of stateFiles(f)) fs.rmSync(file); } },
@@ -400,6 +400,11 @@ test('stale state record at the bound: record lost or generation replaced stops 
     f.advance(300_000); await f.tick(d); // attempt 3 at exactly 10 minutes: bound reached
     assert.equal(f.calls.length, calls, `${item.name}: no request after the record went stale`);
     const failure = f.entry().handoff_failure;
+    if (item.name === 'record lost') {
+      assert.equal(failure.attempts, 1);
+      assert.equal(f.logs.filter(l => l.level === 'ERROR').length, 0);
+      continue;
+    }
     assert.equal(failure.terminal, true, item.name);
     assert.equal(failure.attempts, 3);
     assert.equal(failure.stage, 'state_read');

@@ -14,8 +14,8 @@ if (/^\[MEDIA:[^\]]+\]/i.test(message.trimStart())) {
   process.exit(2);
 }
 try {
-  await reportFromCLI(getConfig(), endpoint, 'complete', message);
-  console.log(`OK: task ${endpoint} completion confirmed`);
+  const result = await reportFromCLI(getConfig(), endpoint, 'complete', message);
+  if (result !== null) console.log(`OK: task ${endpoint} completion confirmed`);
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
   process.exit(1);
