@@ -139,12 +139,14 @@ export function createTaskState(config, options = {}) {
   const save = record => { write(file(record.task_id), record); return record; };
   function current(id, generation) {
     const record = get(id);
-    if (!record || !generation || record.generation !== generation) throw new Error('unknown or stale task generation');
+    if (!record) return null;
+    if (!generation || record.generation !== generation) throw new Error('unknown or stale task generation');
     if (record.daemon_id !== config.daemon_id) throw new Error('task belongs to another daemon');
     return record;
   }
   function assertCurrent({ taskId, generation, requireRunning = false }) {
     const record = current(taskId, generation);
+    if (!record) return null;
     if (record.report) throw new Error('task has a frozen terminal report; execution is blocked');
     if (record.execution.quiesced) throw new Error('task execution is quiesced');
     if (requireRunning && !record.start_confirmed) throw new Error('task start is not confirmed');
@@ -298,6 +300,7 @@ export function createTaskState(config, options = {}) {
     async captureIssueAssignment(taskId, generation, issue) {
       return lock(taskId, async () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         const assignment = issueAssignment(issue);
         if (record.issue_id !== issue?.id || !assignment || record.issue_assignment) return record;
         if (assignment.type === 'squad' && record.is_leader_task === true) {
@@ -323,6 +326,7 @@ export function createTaskState(config, options = {}) {
       if (!['task_cancelled', 'issue_cancelled', 'issue_reassigned'].includes(reason)) throw new Error('invalid cancellation reason');
       return lock(taskId, async () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         if (!isActive()) return null;
         if (!taskNeedsCancellationCheck(record, config.daemon_id)) return null;
         if (!validDeliveryEndpoint(record, record.delivery.endpoint)) throw new Error('invalid cancellation delivery endpoint');
@@ -340,9 +344,11 @@ export function createTaskState(config, options = {}) {
     },
     list() {
       return fs.readdirSync(root).filter(name => name.endsWith('.json')).map(name => {
-        const fd = fs.openSync(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
         let record;
-        try { record = JSON.parse(fs.readFileSync(fd, 'utf8')); } finally { fs.closeSync(fd); }
+        try {
+          const fd = fs.openSync(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          try { record = JSON.parse(fs.readFileSync(fd, 'utf8')); } finally { fs.closeSync(fd); }
+        } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
         return record.origin === origin && record.workspace_id === workspace ? get(record.task_id) : null;
       }).filter(Boolean);
     },
@@ -351,7 +357,9 @@ export function createTaskState(config, options = {}) {
       const ids = [sourceId, targetId].sort();
       return lock(ids[0], () => lock(ids[1], async () => {
         const source = current(sourceId, sourceGeneration);
+        if (!source) return null;
         const target = current(targetId, targetGeneration);
+        if (!target) return null;
         if (source.report?.state !== 'confirmed' || source.report.action !== 'fail' || !source.execution.quiesced) {
           throw new Error('recovery requires confirmed failed and stopped source');
         }
@@ -390,6 +398,7 @@ export function createTaskState(config, options = {}) {
       if (reason.length > 1000) throw new Error('abandon reason exceeds 1000 characters');
       return lock(taskId, () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         if (record.preparation_failure) {
           if (record.preparation_failure.reason !== reason) throw new Error('preparation failure reason is frozen');
           return record;
@@ -406,6 +415,7 @@ export function createTaskState(config, options = {}) {
     async startAbandonedPreparation(taskId, generation) {
       return lock(taskId, async () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         if (!record.preparation_failure || !record.execution.quiesced || record.execution.accepted || record.delivery) {
           throw new Error('no frozen prestart termination decision');
         }
@@ -420,6 +430,7 @@ export function createTaskState(config, options = {}) {
     async start(taskId, generation) {
       return lock(taskId, async () => {
         const record = assertCurrent({ taskId, generation });
+        if (!record) return null;
         if (record.cancellation_notice) throw new Error('task has a cancellation notice; stop work');
         try { await startRequest(record); }
         catch (error) { record.start_unknown = true; save(record); throw error; }
@@ -430,6 +441,7 @@ export function createTaskState(config, options = {}) {
     async setAgentDelivery(taskId, generation, delivery) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation });
+        if (!record) return null;
         if (record.execution.accepted) throw new Error('cannot replace an accepted task card');
         if (!delivery || !validDeliveryEndpoint(record, delivery.endpoint) || typeof delivery.content !== 'string'
           || !delivery.content || delivery.content.includes('\0') || !delivery.content.isWellFormed()) throw new Error('invalid task delivery');
@@ -442,6 +454,7 @@ export function createTaskState(config, options = {}) {
     async acknowledgeLegacyStopped(taskId, generation) {
       return lock(taskId, () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         record.execution.legacy_stopped_acknowledged = true;
         return save(record);
       });
@@ -449,6 +462,7 @@ export function createTaskState(config, options = {}) {
     async acknowledgeStopped(taskId, generation, metadata = {}) {
       return lock(taskId, () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         if (record.report) throw new Error('terminal report is frozen; use reconcile');
         const selected = {};
         for (const key of ['work_dir', 'branch_name', 'pr_url']) {
@@ -462,6 +476,7 @@ export function createTaskState(config, options = {}) {
     async setDelivery(taskId, generation, delivery) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation });
+        if (!record) return null;
         if (!delivery || !validDeliveryEndpoint(record, delivery.endpoint) || typeof delivery.content !== 'string'
           || !delivery.content || delivery.content.includes('\0') || !delivery.content.isWellFormed()) throw new Error('invalid task delivery');
         const frozen = { content: delivery.content, endpoint: delivery.endpoint };
@@ -478,6 +493,7 @@ export function createTaskState(config, options = {}) {
     async markDelivered(taskId, generation, { scheduled } = {}) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
+        if (!record) return null;
         if (!record.delivery) throw new Error('task has no frozen delivery');
         if (scheduled !== undefined) {
           if (typeof scheduled !== 'boolean') throw new Error('invalid delivery receipt');
@@ -490,6 +506,7 @@ export function createTaskState(config, options = {}) {
     async markAccepted(taskId, generation) {
       return lock(taskId, () => {
         const record = assertCurrent({ taskId, generation, requireRunning: true });
+        if (!record) return false;
         if (record.cancellation_notice) throw new Error('task has a cancellation notice; stop work');
         if (record.execution.accepted) return false;
         record.execution.accepted = true; save(record); return true;
@@ -498,17 +515,24 @@ export function createTaskState(config, options = {}) {
     async quiesceUnaccepted(taskId, generation) {
       return lock(taskId, () => {
         const record = current(taskId, generation);
+        if (!record) return false;
         if (record.execution.accepted) return false;
         record.execution.quiesced = true; save(record); return true;
       });
     },
     async markQuiesced(taskId, generation) {
-      return lock(taskId, () => { const record = current(taskId, generation); record.execution.quiesced = true; return save(record); });
+      return lock(taskId, () => {
+        const record = current(taskId, generation);
+        if (!record) return null;
+        record.execution.quiesced = true;
+        return save(record);
+      });
     },
     async report(taskId, generation, action, payload) {
       const frozen = payloadFor(action, payload);
       return lock(taskId, async () => {
         const record = current(taskId, generation);
+        if (!record) return null;
         if (!record.start_confirmed || !record.execution.quiesced) throw new Error('terminal report requires confirmed start and stopped execution');
         if (record.report) {
           if (record.report.action !== action || record.report.payload_digest !== digest(frozen)) throw new Error('terminal payload conflicts with frozen report');
@@ -521,10 +545,20 @@ export function createTaskState(config, options = {}) {
         return send(record);
       });
     },
+    async removeSettled(taskId, generation, beforeRemove) {
+      return lock(taskId, () => {
+        const record = get(taskId);
+        if (!record || record.generation !== generation || !taskReportSettled(record)) return false;
+        if (beforeRemove(record) !== true) return false;
+        try { fs.unlinkSync(file(taskId)); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        return true;
+      });
+    },
     async reconcile(taskId, { generation, replay = false } = {}) {
       return lock(taskId, async () => {
         const record = get(taskId);
-        if (!record) throw new Error('unknown task');
+        if (!record) return null;
         // Old callers may read results, but can never write to the platform.
         if (replay) current(taskId, generation);
         return reconcileLocked(record, replay);

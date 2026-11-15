@@ -83,3 +83,18 @@ historical implementation modules with no supported runtime imports/callers.
 The corresponding prior Git-manager suites are retained under `historical/` as
 `.history.js` reference files. They document the old workflow, are excluded from
 normal test discovery, and do not validate the new Agent-owned workflow.
+
+## Completed dispatch records
+
+The existing bridge poll removes at most 32 settled task records per round. A
+confirmed, conflict or superseded report is eligible only after token cleanup
+is durably complete and any matching preparation has no handoff failure. The
+preparation is removed before task state under the task lock; a later poll
+finishes state removal if the first removal was interrupted. Cleanup failures
+warn and leave other dispatch work running. Existing records use the same rule.
+
+Calls with a generation quietly ignore missing state; `begin` returns
+`accepted: false`. A present record with a stale generation still rejects.
+Legacy calls without a generation retain their existing behavior, and first
+claims still create their records. Reply guards, lock files, downloads and
+historical execution artifacts are outside this cleanup.

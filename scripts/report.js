@@ -10,8 +10,8 @@ if (!['progress', 'fail', 'reconcile', 'complete-posted'].includes(action) || !e
   process.exit(2);
 }
 try {
-  await reportFromCLI(getConfig(), endpoint, action === 'complete-posted' ? 'complete' : action, text, { contentAlreadyPosted: action === 'complete-posted' });
-  console.log(`OK: task ${endpoint} ${action} confirmed`);
+  const result = await reportFromCLI(getConfig(), endpoint, action === 'complete-posted' ? 'complete' : action, text, { contentAlreadyPosted: action === 'complete-posted' });
+  if (result !== null) console.log(`OK: task ${endpoint} ${action} confirmed`);
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
   process.exit(1);

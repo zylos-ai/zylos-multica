@@ -122,6 +122,7 @@ export function createBridge(initialConfig, dependencies = {}) {
   let taskState;
   let cancellationMonitor;
   let cancellationCheck;
+  let cleanupCheck;
   let backoffIndex = -1;
   let stopped = false;
   let wakeSleep;
@@ -537,7 +538,11 @@ export function createBridge(initialConfig, dependencies = {}) {
     // A finite sweep must not delay heartbeats/claims behind slow status reads.
     // Track completion across reloads for shutdown; only the monitor gates polls.
     cancellationCheck = Promise.all([cancellationCheck, checkTaskCancellations()]).then(() => undefined);
-    if (dispatcher || fs.existsSync(dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'))) taskDispatcher().resume();
+    if (dispatcher || fs.existsSync(dependencies.preparationRoot ?? path.join(DATA_DIR, 'dispatch-preparations'))) {
+      taskDispatcher().resume();
+      // Reuse this poll; cleanup yields on existing task locks while claims continue.
+      cleanupCheck = Promise.all([cleanupCheck, taskDispatcher().pruneSettled()]).then(() => undefined);
+    }
     const response = await request(config, 'POST', '/api/daemon/tasks/claim', {
       daemon_id: config.daemon_id,
       runtime_ids: [runtimeId],
@@ -605,7 +610,7 @@ export function createBridge(initialConfig, dependencies = {}) {
       if (backoffIndex >= 0 || !pendingWakeup) await sleep(seconds * 1000);
       pendingWakeup = false;
     }
-    await cancellationCheck;
+    await Promise.all([cancellationCheck, cleanupCheck]);
   }
 
   return {

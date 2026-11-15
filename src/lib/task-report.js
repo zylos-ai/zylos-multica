@@ -12,11 +12,15 @@ export async function reportFromCLI(config, endpoint, action, text, options = {}
   const { taskId, generation } = parseTaskEndpoint(endpoint, { allowLegacy: action !== 'reconcile' });
   if (!config.workspace_id) await ensureWorkspaceResolved(config, options);
   const state = createTaskState(config, options);
+  const bound = generation ? state.get(taskId) : null;
+  if (generation && !bound) return null;
   if (action === 'complete' && !options.guardHeld) {
-    const context = state.get(taskId) ?? (options.loadTaskReplyContext ?? loadTaskReplyContext)(taskId);
+    const context = bound ?? state.get(taskId) ?? (options.loadTaskReplyContext ?? loadTaskReplyContext)(taskId);
     return createReplyGuard(config, options).run(taskId, generation, context, async guard => {
+      const current = state.get(taskId);
+      if (generation && !current) return null;
       // Replays keep the payload that was checked before the first freeze.
-      if (!state.get(taskId)?.report) guard.assertComplete(text, options.contentAlreadyPosted === true);
+      if (!current?.report) guard.assertComplete(text, options.contentAlreadyPosted === true);
       if (!generation) {
         if (state.get(taskId)) throw new Error('Bound task reporting requires task_id@generation');
         guard.freezeLegacyCompletion();
@@ -34,8 +38,9 @@ export async function reportFromCLI(config, endpoint, action, text, options = {}
     return result;
   }
   if (action === 'progress') {
-    if (generation) state.assertCurrent({ taskId, generation, requireRunning: true });
-    else if (state.get(taskId)) throw new Error('Bound task progress requires task_id@generation');
+    if (generation) {
+      if (!state.assertCurrent({ taskId, generation, requireRunning: true })) return null;
+    } else if (state.get(taskId)) throw new Error('Bound task progress requires task_id@generation');
     return reportTask(config, action, taskId, text);
   }
   const metadata = { ...(action === 'reconcile' ? {} : state.get(taskId)?.execution.metadata ?? {}) };
@@ -43,6 +48,7 @@ export async function reportFromCLI(config, endpoint, action, text, options = {}
   const record = action === 'reconcile'
     ? await state.reconcile(taskId, { generation, replay: true })
     : await state.report(taskId, generation, action, { ...metadata, [action === 'complete' ? 'output' : 'error']: text });
+  if (!record) return null;
   if (record.report.state !== 'confirmed') {
     throw new Error(`task report ${record.report.state}; frozen report retained. Use report.js reconcile ${endpoint} for authority readback`);
   }
