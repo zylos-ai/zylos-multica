@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-15
+
+### Fixed
+
+- The bridge no longer reprocesses finished task dispatch records on every
+  resume pass (about every 15 s). Each pass used to lock and rewrite every
+  retained record with synchronous fsync, stalling the process for several
+  seconds as history grew; this made the 0.8.0 cancellation check time out,
+  so the stop notice for a running task was never sent. Settled records are
+  now skipped and unchanged records are not rewritten. No records are deleted
+  and no timeouts changed (#72).
+
 ## [0.8.0] - 2026-11-15
 
 ### Added
