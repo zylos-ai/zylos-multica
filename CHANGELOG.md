@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-15
+
+### Changed
+
+- Finished task records are now deleted once the task's result is settled and
+  its token cleanup is done: the dispatch preparation is removed first, then
+  the task state. Cleanup runs on the existing poll, at most 32 records per
+  pass, and logs one INFO line when it removes any. Existing records from
+  earlier versions are cleaned up the same way after upgrading (#74).
+- A bound task whose record no longer exists is treated as finished and
+  ignored instead of raising an error. Legacy tasks, which never had a local
+  record, keep their direct-report behavior (#74).
+
+### Notes
+
+- Before this change every poll pass read every retained record, so the cost
+  grew with history (about 0.5 s of main-thread blocking per pass at ~1,900
+  records). After the first cleanup pass, each poll reads only records for
+  tasks still in progress (#74).
+
 ## [0.8.1] - 2026-11-15
 
 ### Fixed
