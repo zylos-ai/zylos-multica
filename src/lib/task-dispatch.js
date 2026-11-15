@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { parseTaskEndpoint, buildTaskEndpoint } from './session-group.js';
-import { atomicTaskWrite } from './task-state.js';
+import { atomicTaskWrite, taskReportSettled } from './task-state.js';
 import { finishAbandonment } from './agent-execution.js';
 import { describeError } from './log-redact.js';
 
@@ -185,7 +185,13 @@ export function createTaskDispatcher(config, {
     save(stored);
   }
   function schedule(entry) {
-    if (stopped || jobs.has(entry.task.id)) return;
+    if (stopped || jobs.has(entry.task.id) || entry.handoff_failure?.terminal) return;
+    let record;
+    try { record = state.get(entry.task.id); }
+    catch { /* step() retains the existing state-read failure bookkeeping. */ }
+    // Closed authority results with durable token cleanup have no work left.
+    // Retain a job if its successful pass still needs to clear a handoff failure.
+    if (record?.generation === entry.generation && taskReportSettled(record) && !entry.handoff_failure) return;
     const controller = new AbortController();
     const progress = { stage: 'state_read' };
     const promise = step(entry, controller.signal, progress)

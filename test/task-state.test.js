@@ -407,3 +407,39 @@ test('delivery accepts a matching typed route, rejects another issue/chat identi
   assert.equal(f.state.get('typed').delivery.endpoint, endpoint);
   assert.equal(f.state.get('typed').delivery.content, 'card');
 });
+
+test('settled token cleanup makes explicit reconciliation a read without writes or fsync', async t => {
+  let writes = 0;
+  const f = await fixture(t, { write(file, value) { writes++; atomicTaskWrite(file, value); } });
+  await f.begin();
+  await f.state.report(task.id, f.generation, 'complete', { output: 'done' });
+  const previousWrites = writes;
+  const removed = f.removed.length;
+  const sync = t.mock.method(fs, 'fsyncSync');
+  const restarted = createTaskState(config, f.options);
+  await restarted.reconcile(task.id, { generation: f.generation, replay: true });
+  assert.equal(writes, previousWrites);
+  assert.equal(sync.mock.callCount(), 0);
+  assert.equal(f.removed.length, removed);
+});
+
+test('repeated token cleanup failure writes only when its durable pending flag changes', async t => {
+  let writes = 0, removals = 0, failing = true;
+  const f = await fixture(t, { write(file, value) { writes++; atomicTaskWrite(file, value); },
+    removeTaskToken() { removals++; if (failing) throw new Error('cannot remove token'); } });
+  await f.begin();
+  const result = await f.state.report(task.id, f.generation, 'complete', { output: 'done' });
+  assert.equal(result.report.token_cleanup_pending, true);
+  const previousWrites = writes;
+  const sync = t.mock.method(fs, 'fsyncSync');
+  await f.state.reconcile(task.id, { generation: f.generation, replay: true });
+  assert.equal(writes, previousWrites);
+  assert.equal(sync.mock.callCount(), 0);
+  assert.equal(removals, 2);
+  failing = false;
+  await f.state.reconcile(task.id, { generation: f.generation, replay: true });
+  assert.equal(writes, previousWrites + 1);
+  assert.equal(sync.mock.callCount(), 2);
+  assert.equal(f.state.get(task.id).report.token_cleanup_pending, false);
+  assert.equal(removals, 3);
+});
